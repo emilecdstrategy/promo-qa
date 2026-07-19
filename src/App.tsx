@@ -252,7 +252,7 @@ function Overview({
   const healthy = automationEnabled &&
     data.configuration.asana &&
     data.configuration.anthropic &&
-    Boolean(data.lastRun?.status !== "error");
+    isHealthyAutomationRun(data.lastRun);
 
   return (
     <>
@@ -950,6 +950,12 @@ function storeLabel(store: Pick<Store, "display_name" | "store_slug">) {
 function parseShopifyAdminSlug(value: string) {
   const match = value.match(/admin\.shopify\.com\/store\/([a-z0-9-]+)/i);
   return match ? match[1].toLowerCase() : null;
+}
+
+function isHealthyAutomationRun(run: OverviewData["lastRun"]) {
+  if (!run) return true;
+  if (run.status === "completed" || run.status === "partial") return true;
+  return false;
 }
 
 function slugify(value: string) {

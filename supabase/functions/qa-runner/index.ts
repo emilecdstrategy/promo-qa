@@ -475,7 +475,13 @@ async function notify(
     );
     return;
   }
-  await sendAlertEmail(config, subject, text);
+  try {
+    await sendAlertEmail(config, subject, text);
+  } catch (error) {
+    console.error(
+      `Email not sent (${subject}): ${errorMessage(error)}`,
+    );
+  }
 }
 
 function errorMessage(error: unknown): string {
