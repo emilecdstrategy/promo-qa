@@ -13,6 +13,7 @@ import {
   LoaderCircle,
   LogOut,
   Menu,
+  Pause,
   Play,
   Plus,
   RefreshCw,
@@ -41,10 +42,15 @@ export default function App() {
   const [page, setPage] = useState<Page>("overview");
   const [mobileNav, setMobileNav] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
+  const [automationEnabled, setAutomationEnabled] = useState(true);
 
   useEffect(() => {
     api("/session")
-      .then(() => setAuthenticated(true))
+      .then(() => {
+        setAuthenticated(true);
+        return api<{ enabled: boolean }>("/settings/automation");
+      })
+      .then((settings) => setAutomationEnabled(settings.enabled))
       .catch(() => setAuthenticated(false));
   }, []);
 
@@ -82,9 +88,12 @@ export default function App() {
           <NavItem icon={<Play />} label="Manual QA" active={page === "manual"} onClick={() => navigate("manual")} />
         </nav>
         <div className="sidebar-footer">
-          <div className="system-mini">
-            <span className="live-dot" />
-            <div><strong>Automation live</strong><span>Runs every 10 minutes</span></div>
+          <div className={`system-mini ${automationEnabled ? "" : "paused"}`}>
+            <span className={automationEnabled ? "live-dot" : "paused-dot"} />
+            <div>
+              <strong>{automationEnabled ? "Automation live" : "Automation paused"}</strong>
+              <span>{automationEnabled ? "Runs every 10 minutes" : "Scheduled checks are off"}</span>
+            </div>
           </div>
           <button
             className="nav-item logout"
@@ -109,7 +118,14 @@ export default function App() {
           <div className="topbar-status"><ShieldCheck size={16} /> Secure admin</div>
         </header>
         <div className="page">
-          {page === "overview" && <Overview onNavigate={navigate} />}
+          {page === "overview" && (
+            <Overview
+              onNavigate={navigate}
+              automationEnabled={automationEnabled}
+              onAutomationChange={setAutomationEnabled}
+              notify={notify}
+            />
+          )}
           {page === "stores" && <Stores notify={notify} />}
           {page === "activity" && <ActivityLog />}
           {page === "manual" && <ManualRun notify={notify} />}
@@ -177,10 +193,21 @@ function Login({ onSuccess }: { onSuccess: () => void }) {
   );
 }
 
-function Overview({ onNavigate }: { onNavigate: (page: Page) => void }) {
+function Overview({
+  onNavigate,
+  automationEnabled,
+  onAutomationChange,
+  notify,
+}: {
+  onNavigate: (page: Page) => void;
+  automationEnabled: boolean;
+  onAutomationChange: (enabled: boolean) => void;
+  notify: (message: string) => void;
+}) {
   const [data, setData] = useState<OverviewData | null>(null);
   const [activity, setActivity] = useState<ActivityItem[]>([]);
   const [error, setError] = useState("");
+  const [savingAutomation, setSavingAutomation] = useState(false);
 
   const load = useCallback(async () => {
     setError("");
@@ -191,18 +218,43 @@ function Overview({ onNavigate }: { onNavigate: (page: Page) => void }) {
       ]);
       setData(overview);
       setActivity(recent.items);
+      onAutomationChange(overview.automation.enabled);
     } catch (err) {
       setError(errorText(err));
     }
-  }, []);
+  }, [onAutomationChange]);
+
+  async function toggleAutomation(next: boolean) {
+    setSavingAutomation(true);
+    try {
+      const result = await patch<{ enabled: boolean }>("/settings/automation", {
+        enabled: next,
+      });
+      onAutomationChange(result.enabled);
+      setData((current) => current
+        ? {
+          ...current,
+          automation: { ...current.automation, enabled: result.enabled },
+          configuration: { ...current.configuration, scheduler: result.enabled },
+        }
+        : current);
+      notify(result.enabled ? "Automation turned on" : "Automation turned off");
+    } catch (err) {
+      notify(errorText(err));
+    } finally {
+      setSavingAutomation(false);
+    }
+  }
 
   useEffect(() => { void load(); }, [load]);
   if (!data && !error) return <PageLoader />;
   if (error) return <ErrorState message={error} retry={load} />;
   if (!data) return null;
 
-  const healthy = data.configuration.scheduler && data.configuration.asana &&
-    data.configuration.anthropic && Boolean(data.lastRun?.status !== "error");
+  const healthy = automationEnabled &&
+    data.configuration.asana &&
+    data.configuration.anthropic &&
+    Boolean(data.lastRun?.status !== "error");
 
   return (
     <>
@@ -212,12 +264,44 @@ function Overview({ onNavigate }: { onNavigate: (page: Page) => void }) {
         description="Monitor your promo QA automation, spot issues, and take action."
         action={<button className="button secondary" onClick={load}><RefreshCw /> Refresh</button>}
       />
+      <section className={`automation-toggle ${automationEnabled ? "on" : "off"}`}>
+        <div className="automation-toggle-copy">
+          <div className={`automation-toggle-icon ${automationEnabled ? "on" : "off"}`}>
+            {automationEnabled ? <Zap /> : <Pause />}
+          </div>
+          <div>
+            <strong>{automationEnabled ? "Automatic QA is on" : "Automatic QA is off"}</strong>
+            <span>
+              {automationEnabled
+                ? "Scheduled checks run every 10 minutes and can complete or comment on Asana tasks."
+                : "Scheduled checks are paused. Manual QA still works from the Manual QA page."}
+            </span>
+          </div>
+        </div>
+        <label className="automation-switch">
+          <span>{automationEnabled ? "On" : "Off"}</span>
+          <input
+            type="checkbox"
+            checked={automationEnabled}
+            disabled={savingAutomation}
+            onChange={(event) => void toggleAutomation(event.target.checked)}
+          />
+        </label>
+      </section>
       <section className={`health-banner ${healthy ? "healthy" : "warning"}`}>
         <div className="health-icon">{healthy ? <CheckCircle2 /> : <AlertTriangle />}</div>
         <div>
-          <strong>{healthy ? "All systems operational" : "Automation needs attention"}</strong>
+          <strong>
+            {!automationEnabled
+              ? "Automation is paused"
+              : healthy
+              ? "All systems operational"
+              : "Automation needs attention"}
+          </strong>
           <span>
-            {healthy
+            {!automationEnabled
+              ? "Turn automation back on when you want scheduled checks to resume."
+              : healthy
               ? `Next scheduled check ${relativeTime(data.nextRunAt)}`
               : "Review the configuration and latest activity below."}
           </span>
@@ -240,7 +324,11 @@ function Overview({ onNavigate }: { onNavigate: (page: Page) => void }) {
         <section className="panel">
           <PanelHeader title="System status" subtitle="Live configuration checks" />
           <div className="config-list">
-            <ConfigRow label="Scheduler" detail="Every 10 minutes" ok={data.configuration.scheduler} />
+            <ConfigRow
+              label="Scheduler"
+              detail={automationEnabled ? "Every 10 minutes" : "Paused"}
+              ok={automationEnabled}
+            />
             <ConfigRow label="Asana connection" detail="Task access ready" ok={data.configuration.asana} />
             <ConfigRow label="Claude verification" detail="AI checks ready" ok={data.configuration.anthropic} />
             <ConfigRow label="Email alerts" detail="Gmail SMTP" ok={data.configuration.smtp} />

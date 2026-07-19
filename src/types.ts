@@ -58,6 +58,7 @@ export interface ActivityItem {
 }
 
 export interface OverviewData {
+  automation: { enabled: boolean; updatedAt: string | null };
   stores: { total: number; active: number; configured: number };
   lastRun: AutomationRun | null;
   nextRunAt: string;

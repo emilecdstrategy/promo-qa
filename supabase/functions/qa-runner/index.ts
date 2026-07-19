@@ -82,6 +82,23 @@ Deno.serve(async (request) => {
     const trigger = request.headers.get("x-qa-trigger") === "cron"
       ? "cron"
       : "manual";
+
+    if (trigger === "cron" && !await isAutomationEnabled()) {
+      automationRunId = await createAutomationRun({
+        trigger,
+        dryRun: false,
+        requestedBy: "cron",
+      });
+      await finishAutomationRun(automationRunId, [], requestStartedAt);
+      return Response.json({
+        ok: true,
+        automationEnabled: false,
+        processed: 0,
+        results: [],
+        message: "Automation is turned off. Scheduled checks were skipped.",
+      });
+    }
+
     automationRunId = await createAutomationRun({
       trigger,
       dryRun: Boolean(input.dryRun),
@@ -309,6 +326,12 @@ async function processTask(
     confidence: Math.min(spec.confidence, verdict.confidence),
     details: verdict,
   };
+}
+
+async function isAutomationEnabled(): Promise<boolean> {
+  const { data, error } = await supabase.rpc("get_promo_qa_automation_enabled");
+  if (error) throw error;
+  return Boolean(data);
 }
 
 async function getStore(storeSlug: string): Promise<StoreCredential | null> {

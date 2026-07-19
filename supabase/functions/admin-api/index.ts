@@ -28,6 +28,12 @@ Deno.serve(async (request) => {
     if (request.method === "GET" && path === "/overview") {
       return json(await getOverview());
     }
+    if (request.method === "GET" && path === "/settings/automation") {
+      return json(await getAutomationSettings());
+    }
+    if (request.method === "PATCH" && path === "/settings/automation") {
+      return json(await setAutomationSettings(await request.json()));
+    }
     if (request.method === "GET" && path === "/stores") {
       return json({ stores: await listStores() });
     }
@@ -112,19 +118,47 @@ async function updateStore(currentSlug: string, raw: unknown) {
   return { ok: true, store: body.storeSlug };
 }
 
+async function getAutomationSettings() {
+  const { data, error } = await supabase.rpc("get_promo_qa_automation_enabled");
+  if (error) throw error;
+  const { data: row, error: rowError } = await supabase
+    .from("promo_qa_settings")
+    .select("updated_at")
+    .eq("key", "automation_enabled")
+    .maybeSingle();
+  if (rowError) throw rowError;
+  return {
+    enabled: Boolean(data),
+    updatedAt: row?.updated_at ?? null,
+  };
+}
+
+async function setAutomationSettings(raw: unknown) {
+  if (!isObject(raw) || typeof raw.enabled !== "boolean") {
+    throw new Error("Expected { enabled: boolean }");
+  }
+  const { data, error } = await supabase.rpc("set_promo_qa_automation_enabled", {
+    p_enabled: raw.enabled,
+  });
+  if (error) throw error;
+  return { enabled: raw.enabled, updatedAt: data };
+}
+
 async function getOverview() {
   const since = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
-  const [stores, latestResult, recentResult] = await Promise.all([
+  const [stores, latestResult, recentResult, automation] = await Promise.all([
     listStores(),
     supabase.from("automation_runs").select("*")
       .order("started_at", { ascending: false }).limit(1).maybeSingle(),
     supabase.from("automation_run_items").select("status").gte("started_at", since),
+    getAutomationSettings(),
   ]);
   if (latestResult.error) throw latestResult.error;
   if (recentResult.error) throw recentResult.error;
   const recent = recentResult.data ?? [];
   const latest = latestResult.data;
   return {
+    automation,
     stores: {
       total: stores.length,
       active: stores.filter((store: { active: boolean }) => store.active).length,
@@ -141,7 +175,7 @@ async function getOverview() {
       skipped: recent.filter((item) => item.status.startsWith("skipped")).length,
     },
     configuration: {
-      scheduler: true,
+      scheduler: automation.enabled,
       smtp: Boolean(Deno.env.get("SMTP_HOST") && Deno.env.get("SMTP_USER")),
       asana: Boolean(Deno.env.get("ASANA_ACCESS_TOKEN")),
       anthropic: Boolean(Deno.env.get("ANTHROPIC_API_KEY")),
