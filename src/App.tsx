@@ -345,7 +345,6 @@ function Stores({ notify }: { notify: (message: string) => void }) {
         description="Manage Shopify stores and their encrypted Theme Access credentials."
         action={<button className="button primary" onClick={() => setEditing("new")}><Plus /> Add store</button>}
       />
-      <div className="info-strip"><ShieldCheck /><span>Theme Access passwords are encrypted at rest and can never be viewed after saving.</span></div>
       {loading ? <PageLoader /> : error ? <ErrorState message={error} retry={load} /> : (
         <section className="panel table-panel">
           <div className="table-wrap">
