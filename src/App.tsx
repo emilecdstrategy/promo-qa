@@ -355,8 +355,11 @@ function Stores({ notify }: { notify: (message: string) => void }) {
                   <tr key={store.id}>
                     <td>
                       <div className="store-cell">
-                        <div className="store-avatar">{storeInitials(store)}</div>
-                        <div><strong>{storeLabel(store)}</strong><span>{store.shop_domain}</span></div>
+                        <StoreFavicon domain={store.shop_domain} label={storeLabel(store)} />
+                        <div className="store-meta">
+                          <strong>{storeLabel(store)}</strong>
+                          <span>{store.shop_domain}</span>
+                        </div>
                       </div>
                     </td>
                     <td><StatusBadge status={store.active ? "active" : "inactive"} /></td>
@@ -794,6 +797,43 @@ function SelectField({
   );
 }
 
+function StoreFavicon({ domain, label }: { domain: string; label: string }) {
+  const [source, setSource] = useState<"direct" | "google" | "failed">("direct");
+  const normalized = domain.trim().toLowerCase();
+
+  if (source === "failed") {
+    return (
+      <div className="store-avatar store-avatar-fallback" aria-hidden="true">
+        <StoreIcon size={16} />
+      </div>
+    );
+  }
+
+  const src = source === "direct"
+    ? `https://${normalized}/favicon.ico`
+    : storeFaviconFallbackUrl(normalized);
+
+  return (
+    <div className="store-avatar store-avatar-image">
+      <img
+        src={src}
+        alt=""
+        loading="lazy"
+        decoding="async"
+        referrerPolicy="no-referrer"
+        onError={() => {
+          setSource((current) => (current === "direct" ? "google" : "failed"));
+        }}
+      />
+      <span className="sr-only">{label}</span>
+    </div>
+  );
+}
+
+function storeFaviconFallbackUrl(domain: string) {
+  return `https://www.google.com/s2/favicons?domain=${encodeURIComponent(domain)}&sz=64`;
+}
+
 function NavItem({ icon, label, active, onClick }: { icon: ReactNode; label: string; active: boolean; onClick: () => void }) {
   return <button className={`nav-item ${active ? "active" : ""}`} onClick={onClick}>{icon}<span>{label}</span>{active && <span className="nav-indicator" />}</button>;
 }
@@ -900,13 +940,6 @@ function titleCase(value: string) {
 function storeLabel(store: Pick<Store, "display_name" | "store_slug">) {
   const name = store.display_name?.trim();
   return name || titleCase(store.store_slug);
-}
-
-function storeInitials(store: Pick<Store, "display_name" | "store_slug">) {
-  const label = storeLabel(store);
-  const parts = label.split(/\s+/).filter(Boolean);
-  if (parts.length >= 2) return `${parts[0][0]}${parts[1][0]}`.toUpperCase();
-  return label.slice(0, 2).toUpperCase();
 }
 
 function parseShopifyAdminSlug(value: string) {

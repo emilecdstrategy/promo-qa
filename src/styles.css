@@ -218,13 +218,22 @@ table { width: 100%; border-collapse: collapse; }
 th { padding: 12px 18px; color: var(--muted); background: rgba(255, 255, 255, .03); font-size: 11px; font-weight: 700; text-align: left; text-transform: uppercase; letter-spacing: .08em; white-space: nowrap; }
 td { padding: 14px 18px; border-top: 1px solid var(--border); color: var(--text-secondary); font-size: 13px; white-space: nowrap; }
 td:last-child, th:last-child { text-align: right; }
-.store-cell, .task-cell { display: flex; align-items: center; gap: 10px; }
-.store-cell > div:last-child, .task-cell { align-items: flex-start; flex-direction: column; }
-.store-cell > div:last-child { gap: 5px; }
-.store-cell strong, .task-cell strong { color: var(--text); font-size: 13px; }
-.store-cell span, .task-cell span { color: var(--muted); font-size: 12px; }
+.store-cell, .task-cell { display: flex; align-items: center; gap: 12px; }
+.store-meta { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.store-cell strong, .task-cell strong { color: var(--text); font-size: 13px; line-height: 1.2; }
+.store-cell span, .task-cell span { color: var(--muted); font-size: 12px; line-height: 1.2; }
+.task-cell { align-items: flex-start; flex-direction: column; }
 .task-cell span { margin-top: 2px; }
-.store-avatar { width: 34px; height: 34px; display: grid; flex: 0 0 auto; place-items: center; border-radius: 9px; color: var(--accent-bright); background: var(--accent-soft); font-size: 11px; font-weight: 700; }
+.store-avatar {
+  width: 34px; height: 34px; display: grid; flex: 0 0 auto; place-items: center;
+  overflow: hidden; border: 1px solid var(--border); border-radius: 9px; background: var(--surface-3);
+}
+.store-avatar-image img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.store-avatar-fallback { color: var(--accent-bright); background: var(--accent-soft); border-color: rgba(155, 140, 255, .22); }
+.sr-only {
+  position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden;
+  clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0;
+}
 .credential { display: inline-flex; align-items: center; gap: 5px; color: var(--red-text); font-size: 12px; font-weight: 600; }
 .credential.ok { color: var(--green-text); }
 .credential svg { width: 13px; }
