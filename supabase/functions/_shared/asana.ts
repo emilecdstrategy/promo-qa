@@ -7,6 +7,8 @@ const TASK_FIELDS = [
   "html_notes",
   "completed",
   "modified_at",
+  "due_on",
+  "due_at",
   "parent.gid",
   "parent.name",
   "created_by.gid",
@@ -170,11 +172,6 @@ export class AsanaClient {
         .filter(Boolean)
         .join("\n"),
     );
-    if (!editorTarget) {
-      throw new Error(
-        `No Shopify theme editor URL found on Asana task ${taskGid}`,
-      );
-    }
 
     return {
       task,
@@ -183,6 +180,25 @@ export class AsanaClient {
       editorTarget,
     };
   }
+}
+
+export function daysUntilDue(task: Pick<AsanaTask, "due_on" | "due_at">): number | null {
+  const dueValue = task.due_on ?? task.due_at?.slice(0, 10);
+  if (!dueValue) return null;
+
+  const dueDate = new Date(`${dueValue}T00:00:00`);
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  return Math.round((dueDate.getTime() - today.getTime()) / 86_400_000);
+}
+
+export function isDueWithinDays(
+  task: Pick<AsanaTask, "due_on" | "due_at">,
+  days: number,
+): boolean {
+  const untilDue = daysUntilDue(task);
+  if (untilDue === null) return false;
+  return untilDue <= days;
 }
 
 export function isPromoQaTask(task: Pick<AsanaTask, "name">): boolean {

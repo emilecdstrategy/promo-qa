@@ -209,7 +209,7 @@ button:focus-visible, input:focus-visible, select:focus-visible, a:focus-visible
 .status-badge.passed, .status-badge.ready, .status-badge.active { color: var(--green-text); background: var(--green-soft); border-color: rgba(94, 228, 173, .35); }
 .status-badge.failed, .status-badge.error, .status-badge.issue { color: var(--red-text); background: var(--red-soft); border-color: rgba(255, 138, 150, .35); }
 .status-badge.processing { color: var(--accent-bright); background: var(--accent-soft); border-color: rgba(155, 140, 255, .35); }
-.status-badge.skipped_unregistered, .status-badge.skipped_unchanged { color: var(--amber-text); background: var(--amber-soft); border-color: rgba(255, 199, 102, .35); }
+.status-badge.skipped_unregistered, .status-badge.skipped_unchanged, .status-badge.skipped_not_ready { color: var(--amber-text); background: var(--amber-soft); border-color: rgba(255, 199, 102, .35); }
 .info-strip { display: flex; align-items: center; gap: 9px; margin-bottom: 14px; padding: 12px 15px; border: 1px solid rgba(155, 140, 255, .28); border-radius: 9px; color: var(--accent-bright); background: var(--accent-soft); font-size: 13px; line-height: 1.45; }
 .info-strip svg { width: 15px; }
 .table-panel { min-height: 220px; }

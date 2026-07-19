@@ -1,10 +1,10 @@
 import { createClient } from "npm:@supabase/supabase-js@2";
 import { AnthropicClient } from "../_shared/ai.ts";
-import { AsanaClient, isPromoQaTask } from "../_shared/asana.ts";
+import { AsanaClient, isPromoQaTask, isDueWithinDays } from "../_shared/asana.ts";
 import {
   sendAlertEmail,
   type SmtpConfig,
-  smtpConfigFromEnv,
+  getSmtpConfig,
 } from "../_shared/email.ts";
 import { getIndexJson, getPublishedThemeId } from "../_shared/shopify.ts";
 import type {
@@ -45,7 +45,10 @@ const anthropic = new AnthropicClient(
 );
 const encryptionKey = requiredEnv("STORE_TOKEN_ENCRYPTION_KEY");
 const runnerSecret = requiredEnv("QA_RUNNER_SECRET");
-const smtp = smtpConfigFromEnv((name) => Deno.env.get(name));
+const smtp = getSmtpConfig((name) => Deno.env.get(name));
+const MISSING_LINK_DUE_WINDOW_DAYS = 3;
+const MISSING_LINK_COMMENT =
+  "Hi! This promo QA task is due soon, but I don't see a Shopify theme editor / promo scheduler link in the task notes yet. Could you add it when the promo is ready to schedule?";
 
 interface RunRequest {
   taskGid?: string;
@@ -182,9 +185,14 @@ async function processTask(
     taskGid: task.gid,
     taskName: context.task.name,
     parentTaskGid: context.parent?.gid ?? context.task.parent?.gid,
-    storeSlug: context.editorTarget.storeSlug,
-    themeId: context.editorTarget.themeId,
+    storeSlug: context.editorTarget?.storeSlug,
+    themeId: context.editorTarget?.themeId,
   };
+
+  if (!context.editorTarget) {
+    return handleMissingEditorUrl(context, input, resultMeta);
+  }
+
   const store = await getStore(context.editorTarget.storeSlug);
 
   if (!store) {
@@ -328,6 +336,69 @@ async function processTask(
   };
 }
 
+async function handleMissingEditorUrl(
+  context: TaskContext,
+  input: RunRequest,
+  resultMeta: Pick<
+    RunResult,
+    "taskGid" | "taskName" | "parentTaskGid" | "storeSlug" | "themeId"
+  >,
+): Promise<RunResult> {
+  const waitingMessage =
+    "Waiting for a Shopify theme editor / promo scheduler link in the task notes.";
+  const dueSoon = isDueWithinDays(context.task, MISSING_LINK_DUE_WINDOW_DAYS);
+
+  if (!dueSoon) {
+    return {
+      ...resultMeta,
+      status: "skipped_not_ready",
+      action: "none",
+      details: waitingMessage,
+    };
+  }
+
+  const shouldComment = !input.dryRun &&
+    (input.force || !await missingLinkAlreadyCommented(context.task));
+  if (shouldComment) {
+    await asana.addQaComment(
+      context.task.gid,
+      context.creator,
+      MISSING_LINK_COMMENT,
+    );
+    await recordRun({
+      context,
+      task: context.task,
+      status: "skipped_not_ready",
+      action: "commented",
+      verdict: { reason: waitingMessage, dueSoon: true },
+    });
+  }
+
+  return {
+    ...resultMeta,
+    status: "skipped_not_ready",
+    action: shouldComment ? "commented" : "none",
+    details: dueSoon
+      ? `${waitingMessage} Creator was notified because the task is due within ${MISSING_LINK_DUE_WINDOW_DAYS} days.`
+      : waitingMessage,
+  };
+}
+
+async function missingLinkAlreadyCommented(task: AsanaTask): Promise<boolean> {
+  const { data, error } = await supabase
+    .from("qa_runs")
+    .select("status,action_taken,source_modified_at")
+    .eq("asana_task_gid", task.gid)
+    .maybeSingle();
+  if (error) throw error;
+  if (!data || data.status !== "skipped_not_ready" || data.action_taken !== "commented") {
+    return false;
+  }
+  if (!task.modified_at || !data.source_modified_at) return true;
+  return new Date(data.source_modified_at).getTime() >=
+    new Date(task.modified_at).getTime();
+}
+
 async function isAutomationEnabled(): Promise<boolean> {
   const { data, error } = await supabase.rpc("get_promo_qa_automation_enabled");
   if (error) throw error;
@@ -361,7 +432,7 @@ async function alreadyProcessed(task: AsanaTask): Promise<boolean> {
 async function recordRun(input: {
   task: AsanaTask;
   context?: TaskContext;
-  status: "processing" | "passed" | "failed" | "skipped_unregistered" | "error";
+  status: "processing" | "passed" | "failed" | "skipped_unregistered" | "skipped_unchanged" | "skipped_not_ready" | "error";
   action: "completed" | "commented" | "emailed" | "none";
   verdict?: unknown;
   confidence?: number;

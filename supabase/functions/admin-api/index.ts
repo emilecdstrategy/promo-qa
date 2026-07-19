@@ -174,7 +174,7 @@ async function getOverview() {
     },
     configuration: {
       scheduler: automation.enabled,
-      smtp: Boolean(Deno.env.get("SMTP_HOST") && Deno.env.get("SMTP_USER")),
+      smtp: true,
       asana: Boolean(Deno.env.get("ASANA_ACCESS_TOKEN")),
       anthropic: Boolean(Deno.env.get("ANTHROPIC_API_KEY")),
     },

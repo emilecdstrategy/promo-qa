@@ -4,7 +4,8 @@ export type Status =
   | "error"
   | "processing"
   | "skipped_unregistered"
-  | "skipped_unchanged";
+  | "skipped_unchanged"
+  | "skipped_not_ready";
 
 export interface Store {
   id: string;

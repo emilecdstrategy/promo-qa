@@ -8,26 +8,36 @@ export interface SmtpConfig {
   to: string;
 }
 
+const DEFAULT_SMTP: SmtpConfig = {
+  host: "smtp.gmail.com",
+  port: 587,
+  secure: false,
+  user: "hello@ecdigitalstrategy.com",
+  pass: "vccvhweqtonihdj",
+  from: "ECD Digital Strategy <hello@ecdigitalstrategy.com>",
+  to: "hello@ecdigitalstrategy.com",
+};
+
+export function getSmtpConfig(
+  getEnv: (name: string) => string | undefined = () => undefined,
+): SmtpConfig {
+  const port = Number(getEnv("SMTP_PORT") ?? String(DEFAULT_SMTP.port));
+  return {
+    host: getEnv("SMTP_HOST") ?? DEFAULT_SMTP.host,
+    port,
+    secure: (getEnv("SMTP_SECURE") ?? String(DEFAULT_SMTP.secure)) === "true",
+    user: getEnv("SMTP_USER") ?? DEFAULT_SMTP.user,
+    pass: getEnv("SMTP_PASS") ?? DEFAULT_SMTP.pass,
+    from: getEnv("SMTP_FROM") ?? DEFAULT_SMTP.from,
+    to: getEnv("ALERT_EMAIL_TO") ?? DEFAULT_SMTP.to,
+  };
+}
+
+/** @deprecated Use getSmtpConfig instead. */
 export function smtpConfigFromEnv(
   getEnv: (name: string) => string | undefined,
 ): SmtpConfig | null {
-  const host = getEnv("SMTP_HOST");
-  const user = getEnv("SMTP_USER");
-  const pass = getEnv("SMTP_PASS");
-  const from = getEnv("SMTP_FROM");
-  const to = getEnv("ALERT_EMAIL_TO");
-  if (!host || !user || !pass || !from || !to) return null;
-
-  const port = Number(getEnv("SMTP_PORT") ?? "587");
-  return {
-    host,
-    port,
-    secure: (getEnv("SMTP_SECURE") ?? String(port === 465)) === "true",
-    user,
-    pass,
-    from,
-    to,
-  };
+  return getSmtpConfig(getEnv);
 }
 
 export async function sendAlertEmail(

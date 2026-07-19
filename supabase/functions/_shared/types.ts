@@ -22,6 +22,8 @@ export interface AsanaTask {
   html_notes?: string;
   completed?: boolean;
   modified_at?: string;
+  due_on?: string | null;
+  due_at?: string | null;
   parent?: { gid: string; name?: string } | null;
   created_by?: { gid: string; name: string } | null;
 }
@@ -30,7 +32,7 @@ export interface TaskContext {
   task: AsanaTask;
   parent: AsanaTask | null;
   creator: { gid: string; name: string } | null;
-  editorTarget: ShopifyEditorTarget;
+  editorTarget: ShopifyEditorTarget | null;
 }
 
 export interface ExpectedBanner {
