@@ -76,46 +76,44 @@ async function createStore(raw: unknown) {
   const body = validateStoreBody(raw, true);
   const { error } = await supabase.rpc("register_promo_qa_store", {
     p_store_slug: body.storeSlug,
-    p_shop_domain: body.shopDomain,
     p_theme_access_token: body.token,
     p_encryption_key: encryptionKey,
+    p_display_name: body.displayName,
   });
   if (error) throw error;
-  return { ok: true, store: body.storeSlug };
+  return { ok: true, store: body.storeSlug, displayName: body.displayName };
 }
 
 async function updateStore(currentSlug: string, raw: unknown) {
   const body = validateStoreBody(raw, false);
   const { error } = await supabase.rpc("update_promo_qa_store", {
     p_current_slug: currentSlug,
-    p_store_slug: body.storeSlug,
-    p_shop_domain: body.shopDomain,
+    p_display_name: body.displayName,
     p_active: body.active,
   });
   if (error) throw error;
 
   if (body.token) {
     const { error: tokenError } = await supabase.rpc("register_promo_qa_store", {
-      p_store_slug: body.storeSlug,
-      p_shop_domain: body.shopDomain,
+      p_store_slug: currentSlug,
       p_theme_access_token: body.token,
       p_encryption_key: encryptionKey,
+      p_display_name: body.displayName,
     });
     if (tokenError) throw tokenError;
     if (!body.active) {
       const { error: deactivateError } = await supabase.rpc(
         "update_promo_qa_store",
         {
-          p_current_slug: body.storeSlug,
-          p_store_slug: body.storeSlug,
-          p_shop_domain: body.shopDomain,
+          p_current_slug: currentSlug,
+          p_display_name: body.displayName,
           p_active: false,
         },
       );
       if (deactivateError) throw deactivateError;
     }
   }
-  return { ok: true, store: body.storeSlug };
+  return { ok: true, store: currentSlug, displayName: body.displayName };
 }
 
 async function getAutomationSettings() {
@@ -239,24 +237,35 @@ async function invokeRunner(raw: unknown, request: Request) {
 
 function validateStoreBody(raw: unknown, requireToken: boolean) {
   if (!isObject(raw)) throw new Error("Invalid store payload");
-  const storeSlug = String(raw.storeSlug ?? "").trim().toLowerCase();
-  const shopDomain = String(raw.shopDomain ?? "").trim().toLowerCase();
+  const displayName = String(raw.displayName ?? "").trim();
+  const adminUrl = String(raw.adminUrl ?? "").trim();
+  const manualSlug = String(raw.storeSlug ?? "").trim().toLowerCase();
+  const parsedSlug = parseShopifyAdminSlug(adminUrl);
+  const storeSlug = parsedSlug ?? manualSlug;
   const token = String(raw.token ?? "").trim();
-  if (!/^[a-z0-9][a-z0-9-]*$/.test(storeSlug)) {
-    throw new Error("Store slug must contain lowercase letters, numbers, or hyphens");
+
+  if (!displayName) {
+    throw new Error("Enter a client name for this store");
   }
-  if (!/^[a-z0-9][a-z0-9-]*\.myshopify\.com$/.test(shopDomain)) {
-    throw new Error("Enter the permanent .myshopify.com domain");
+  if (!/^[a-z0-9][a-z0-9-]*$/.test(storeSlug)) {
+    throw new Error(
+      "Paste a Shopify admin URL or enter the store handle from admin.shopify.com/store/{handle}",
+    );
   }
   if ((requireToken || token) && !/^shptka_[A-Za-z0-9]+$/.test(token)) {
     throw new Error("Enter a valid Theme Access password beginning with shptka_");
   }
   return {
+    displayName,
     storeSlug,
-    shopDomain,
     token,
     active: raw.active !== false,
   };
+}
+
+function parseShopifyAdminSlug(value: string): string | null {
+  const match = value.match(/admin\.shopify\.com\/store\/([a-z0-9-]+)/i);
+  return match ? match[1].toLowerCase() : null;
 }
 
 function parseTaskGid(value: string): string | null {

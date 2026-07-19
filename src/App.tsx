@@ -206,18 +206,21 @@ function Overview({
 }) {
   const [data, setData] = useState<OverviewData | null>(null);
   const [activity, setActivity] = useState<ActivityItem[]>([]);
+  const [storeNames, setStoreNames] = useState<Map<string, string>>(new Map());
   const [error, setError] = useState("");
   const [savingAutomation, setSavingAutomation] = useState(false);
 
   const load = useCallback(async () => {
     setError("");
     try {
-      const [overview, recent] = await Promise.all([
+      const [overview, recent, storeResult] = await Promise.all([
         api<OverviewData>("/overview"),
         api<{ items: ActivityItem[] }>("/activity?limit=6"),
+        api<{ stores: Store[] }>("/stores"),
       ]);
       setData(overview);
       setActivity(recent.items);
+      setStoreNames(new Map(storeResult.stores.map((store) => [store.store_slug, storeLabel(store)])));
       onAutomationChange(overview.automation.enabled);
     } catch (err) {
       setError(errorText(err));
@@ -318,7 +321,7 @@ function Overview({
         <section className="panel activity-panel">
           <PanelHeader title="Recent activity" subtitle="Latest task-level results" action={<button className="text-button" onClick={() => onNavigate("activity")}>View all <ChevronRight /></button>} />
           {activity.length
-            ? <div className="activity-list">{activity.map((item) => <ActivityRow key={item.id} item={item} />)}</div>
+            ? <div className="activity-list">{activity.map((item) => <ActivityRow key={item.id} item={item} storeName={item.store_slug ? storeNames.get(item.store_slug) : undefined} />)}</div>
             : <EmptyState icon={<Activity />} title="No activity yet" text="The first scheduled or manual run will appear here." />}
         </section>
         <section className="panel">
@@ -382,8 +385,8 @@ function Stores({ notify }: { notify: (message: string) => void }) {
                   <tr key={store.id}>
                     <td>
                       <div className="store-cell">
-                        <div className="store-avatar">{store.store_slug.slice(0, 2).toUpperCase()}</div>
-                        <div><strong>{titleCase(store.store_slug)}</strong><span>{store.shop_domain}</span></div>
+                        <div className="store-avatar">{storeInitials(store)}</div>
+                        <div><strong>{storeLabel(store)}</strong><span>{store.shop_domain}</span></div>
                       </div>
                     </td>
                     <td><StatusBadge status={store.active ? "active" : "inactive"} /></td>
@@ -418,19 +421,35 @@ function StoreDialog({ store, onClose, onSaved }: {
   onClose: () => void;
   onSaved: (message: string) => void;
 }) {
+  const [displayName, setDisplayName] = useState(store?.display_name ?? "");
+  const [adminUrl, setAdminUrl] = useState("");
   const [slug, setSlug] = useState(store?.store_slug ?? "");
-  const [domain, setDomain] = useState(store?.shop_domain ?? "");
   const [token, setToken] = useState("");
   const [active, setActive] = useState(store?.active ?? true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
+  const detectedSlug = parseShopifyAdminSlug(adminUrl);
+  const resolvedSlug = store?.store_slug ?? detectedSlug ?? slug.trim().toLowerCase();
+  const resolvedDomain = resolvedSlug ? `${resolvedSlug}.myshopify.com` : "";
+
+  function handleAdminUrlChange(value: string) {
+    setAdminUrl(value);
+    const parsed = parseShopifyAdminSlug(value);
+    if (parsed) setSlug(parsed);
+  }
 
   async function save(event: FormEvent) {
     event.preventDefault();
     setSaving(true);
     setError("");
     try {
-      const body = { storeSlug: slug, shopDomain: domain, token, active };
+      const body = {
+        displayName,
+        adminUrl,
+        storeSlug: store ? undefined : slug,
+        token,
+        active,
+      };
       if (store) await patch(`/stores/${encodeURIComponent(store.store_slug)}`, body);
       else await post("/stores", body);
       onSaved(store ? "Store settings updated" : "Store connected successfully");
@@ -445,13 +464,45 @@ function StoreDialog({ store, onClose, onSaved }: {
     <div className="dialog-backdrop" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
       <section className="dialog" role="dialog" aria-modal="true" aria-labelledby="store-title">
         <div className="dialog-header">
-          <div><span>{store ? "Store settings" : "New connection"}</span><h2 id="store-title">{store ? titleCase(store.store_slug) : "Add Shopify store"}</h2></div>
+          <div><span>{store ? "Store settings" : "New connection"}</span><h2 id="store-title">{store ? storeLabel(store) : "Add Shopify store"}</h2></div>
           <button className="icon-button" onClick={onClose} aria-label="Close"><X /></button>
         </div>
         <form onSubmit={save}>
           <div className="dialog-body">
-            <label className="field"><span>Store slug</span><input value={slug} onChange={(event) => setSlug(slugify(event.target.value))} placeholder="power-planter-augers" required /><small>The handle used in Shopify admin URLs.</small></label>
-            <label className="field"><span>Permanent Shopify domain</span><input value={domain} onChange={(event) => setDomain(event.target.value.toLowerCase())} placeholder="store-name.myshopify.com" required /></label>
+            <label className="field">
+              <span>Client name</span>
+              <input value={displayName} onChange={(event) => setDisplayName(event.target.value)} placeholder="Power Planter" required />
+              <small>How you refer to this client in the dashboard.</small>
+            </label>
+            {!store ? (
+              <>
+                <label className="field">
+                  <span>Shopify admin URL</span>
+                  <input value={adminUrl} onChange={(event) => handleAdminUrlChange(event.target.value)} placeholder="https://admin.shopify.com/store/power-planter-augers/themes/…" />
+                  <small>Paste any admin link to auto-detect the store handle.</small>
+                </label>
+                {!detectedSlug && (
+                  <label className="field">
+                    <span>Store handle</span>
+                    <input value={slug} onChange={(event) => setSlug(slugify(event.target.value))} placeholder="power-planter-augers" required={!detectedSlug} />
+                    <small>The handle from admin.shopify.com/store/{`{handle}`}.</small>
+                  </label>
+                )}
+                {resolvedDomain && (
+                  <div className="derived-field">
+                    <span>Shopify domain</span>
+                    <strong>{resolvedDomain}</strong>
+                    <small>Detected automatically from the store handle.</small>
+                  </div>
+                )}
+              </>
+            ) : (
+              <div className="derived-field">
+                <span>Shopify connection</span>
+                <strong>{store.shop_domain}</strong>
+                <small>Handle: {store.store_slug}</small>
+              </div>
+            )}
             <label className="field">
               <span>{store ? "Rotate Theme Access password" : "Theme Access password"}</span>
               <input type="password" value={token} onChange={(event) => setToken(event.target.value)} placeholder={store ? "Leave blank to keep current password" : "shptka_…"} required={!store} />
@@ -481,6 +532,7 @@ function ActivityLog() {
   const [selected, setSelected] = useState<ActivityItem | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  const storeNames = new Map(stores.map((item) => [item.store_slug, storeLabel(item)]));
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -510,7 +562,7 @@ function ActivityLog() {
       <section className="panel filter-panel">
         <div className="filter-label"><Search /> Filter results</div>
         <select value={status} onChange={(event) => setStatus(event.target.value)}><option value="">All statuses</option><option value="passed">Passed</option><option value="failed">Failed</option><option value="error">Error</option><option value="skipped_unregistered">Skipped</option></select>
-        <select value={store} onChange={(event) => setStore(event.target.value)}><option value="">All stores</option>{stores.map((item) => <option key={item.id} value={item.store_slug}>{titleCase(item.store_slug)}</option>)}</select>
+        <select value={store} onChange={(event) => setStore(event.target.value)}><option value="">All stores</option>{stores.map((item) => <option key={item.id} value={item.store_slug}>{storeLabel(item)}</option>)}</select>
         <select value={trigger} onChange={(event) => setTrigger(event.target.value)}><option value="">All triggers</option><option value="cron">Scheduled</option><option value="manual">Manual</option></select>
       </section>
       {loading ? <PageLoader /> : error ? <ErrorState message={error} retry={load} /> : (
@@ -522,7 +574,7 @@ function ActivityLog() {
                 <tr key={item.id} className="clickable-row" onClick={() => setSelected(item)}>
                   <td><StatusBadge status={item.status} /></td>
                   <td><div className="task-cell"><strong>{item.task_name || `Task ${item.task_gid}`}</strong><span>{item.action_taken === "none" ? "No Asana action" : `Asana: ${item.action_taken}`}</span></div></td>
-                  <td>{item.store_slug ? titleCase(item.store_slug) : "—"}</td>
+                  <td>{item.store_slug ? storeNames.get(item.store_slug) ?? titleCase(item.store_slug) : "—"}</td>
                   <td><span className="trigger-badge">{item.automation_runs.trigger === "cron" ? <Clock3 /> : <Play />}{item.automation_runs.dry_run ? "Dry run" : item.automation_runs.trigger === "cron" ? "Scheduled" : "Manual live"}</span></td>
                   <td>{item.confidence == null ? "—" : `${Math.round(item.confidence * 100)}%`}</td>
                   <td className="muted">{relativeTime(item.started_at)}</td>
@@ -534,12 +586,12 @@ function ActivityLog() {
           {!items.length && <EmptyState icon={<Search />} title="No matching activity" text="Try changing the filters or run a manual QA check." />}
         </section>
       )}
-      {selected && <ActivityDrawer item={selected} onClose={() => setSelected(null)} />}
+      {selected && <ActivityDrawer item={selected} storeName={selected.store_slug ? storeNames.get(selected.store_slug) ?? titleCase(selected.store_slug) : "Unknown"} onClose={() => setSelected(null)} />}
     </>
   );
 }
 
-function ActivityDrawer({ item, onClose }: { item: ActivityItem; onClose: () => void }) {
+function ActivityDrawer({ item, storeName, onClose }: { item: ActivityItem; storeName: string; onClose: () => void }) {
   const banners = extractBanners(item.details);
   return (
     <div className="drawer-backdrop" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
@@ -550,7 +602,7 @@ function ActivityDrawer({ item, onClose }: { item: ActivityItem; onClose: () => 
         </div>
         <div className="drawer-body">
           <div className="detail-grid">
-            <Detail label="Store" value={item.store_slug ? titleCase(item.store_slug) : "Unknown"} />
+            <Detail label="Store" value={storeName} />
             <Detail label="Theme ID" value={item.theme_id || "—"} />
             <Detail label="Published theme" value={item.published_theme_id || "—"} />
             <Detail label="Confidence" value={item.confidence == null ? "—" : `${Math.round(item.confidence * 100)}%`} />
@@ -683,8 +735,8 @@ function ConfigRow({ label, detail, ok }: { label: string; detail: string; ok: b
   return <div className="config-row"><div className={`config-icon ${ok ? "ok" : ""}`}>{ok ? <Check /> : <X />}</div><div><strong>{label}</strong><span>{detail}</span></div><StatusBadge status={ok ? "ready" : "issue"} /></div>;
 }
 
-function ActivityRow({ item }: { item: ActivityItem }) {
-  return <div className="activity-row"><div className={`activity-icon ${item.status}`}>{statusIcon(item.status)}</div><div className="activity-copy"><strong>{item.task_name || `Task ${item.task_gid}`}</strong><span>{item.store_slug ? titleCase(item.store_slug) : "Unknown store"} · {item.automation_runs.dry_run ? "Dry run" : item.action_taken}</span></div><div className="activity-meta"><StatusBadge status={item.status} /><time>{relativeTime(item.started_at)}</time></div></div>;
+function ActivityRow({ item, storeName }: { item: ActivityItem; storeName?: string }) {
+  return <div className="activity-row"><div className={`activity-icon ${item.status}`}>{statusIcon(item.status)}</div><div className="activity-copy"><strong>{item.task_name || `Task ${item.task_gid}`}</strong><span>{storeName ?? (item.store_slug ? titleCase(item.store_slug) : "Unknown store")} · {item.automation_runs.dry_run ? "Dry run" : item.action_taken}</span></div><div className="activity-meta"><StatusBadge status={item.status} /><time>{relativeTime(item.started_at)}</time></div></div>;
 }
 
 function StatusBadge({ status }: { status: string }) {
@@ -733,6 +785,22 @@ function pageTitle(page: Page) {
 
 function titleCase(value: string) {
   return value.split("-").map((part) => part.charAt(0).toUpperCase() + part.slice(1)).join(" ");
+}
+
+function storeLabel(store: Pick<Store, "display_name" | "store_slug">) {
+  return store.display_name.trim() || titleCase(store.store_slug);
+}
+
+function storeInitials(store: Pick<Store, "display_name" | "store_slug">) {
+  const label = storeLabel(store);
+  const parts = label.split(/\s+/).filter(Boolean);
+  if (parts.length >= 2) return `${parts[0][0]}${parts[1][0]}`.toUpperCase();
+  return label.slice(0, 2).toUpperCase();
+}
+
+function parseShopifyAdminSlug(value: string) {
+  const match = value.match(/admin\.shopify\.com\/store\/([a-z0-9-]+)/i);
+  return match ? match[1].toLowerCase() : null;
 }
 
 function slugify(value: string) {

@@ -1,5 +1,6 @@
 const storeSlug = process.argv[2] ?? "power-planter-augers";
-const shopDomain = process.argv[3] ?? `${storeSlug}.myshopify.com`;
+const displayName = process.argv[3] ?? "Power Planter";
+const shopDomain = `${storeSlug}.myshopify.com`;
 const envSuffix = storeSlug.toUpperCase().replaceAll("-", "_");
 const token = process.env[`SHOPIFY_THEME_ACCESS__${envSuffix}`];
 
@@ -22,9 +23,9 @@ const response = await fetch(`${supabaseUrl}/rest/v1/rpc/register_promo_qa_store
   },
   body: JSON.stringify({
     p_store_slug: storeSlug,
-    p_shop_domain: shopDomain,
     p_theme_access_token: token,
     p_encryption_key: encryptionKey,
+    p_display_name: displayName,
   }),
 });
 
@@ -32,7 +33,7 @@ if (!response.ok) {
   throw new Error(`Store seed failed (${response.status}): ${await response.text()}`);
 }
 
-console.log(`Registered ${shopDomain} with encrypted Theme Access credentials.`);
+console.log(`Registered ${displayName} (${shopDomain}) with encrypted Theme Access credentials.`);
 
 function required(name) {
   const value = process.env[name];

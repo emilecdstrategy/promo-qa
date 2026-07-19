@@ -248,6 +248,10 @@ select { min-height: 38px; padding: 0 34px 0 12px; border: 1px solid var(--borde
 .form-error { display: flex; align-items: flex-start; gap: 8px; padding: 10px 12px; border: 1px solid rgba(255, 138, 150, .35); border-radius: 8px; color: var(--red-text); background: var(--red-soft); font-size: 13px; line-height: 1.45; }
 .form-error svg { width: 15px; flex: 0 0 auto; }
 .toggle-row { display: flex; align-items: center; justify-content: space-between; gap: 20px; padding: 13px 0; }
+.derived-field { display: flex; flex-direction: column; gap: 6px; padding: 12px 14px; border: 1px solid var(--border); border-radius: 9px; background: rgba(255, 255, 255, .02); }
+.derived-field > span { color: var(--muted); font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: .04em; }
+.derived-field strong { color: var(--text); font: 600 14px "Manrope"; }
+.derived-field small { color: var(--muted); font-size: 12px; line-height: 1.5; }
 .toggle-row > div { display: flex; flex-direction: column; }
 .toggle-row strong { font-size: 13px; color: var(--text); }
 .toggle-row span { margin-top: 3px; color: var(--muted); font-size: 12px; }
