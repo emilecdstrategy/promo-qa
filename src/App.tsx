@@ -5,6 +5,7 @@ import {
   ArrowRight,
   Check,
   CheckCircle2,
+  ChevronDown,
   ChevronRight,
   CircleDot,
   Clock3,
@@ -43,6 +44,7 @@ export default function App() {
   const [mobileNav, setMobileNav] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
   const [automationEnabled, setAutomationEnabled] = useState(true);
+  const [savingAutomation, setSavingAutomation] = useState(false);
 
   useEffect(() => {
     api("/session")
@@ -58,6 +60,21 @@ export default function App() {
     setToast(message);
     window.setTimeout(() => setToast(null), 3500);
   }, []);
+
+  async function toggleAutomation(next: boolean) {
+    setSavingAutomation(true);
+    try {
+      const result = await patch<{ enabled: boolean }>("/settings/automation", {
+        enabled: next,
+      });
+      setAutomationEnabled(result.enabled);
+      notify(result.enabled ? "Automation turned on" : "Automation turned off");
+    } catch (err) {
+      notify(errorText(err));
+    } finally {
+      setSavingAutomation(false);
+    }
+  }
 
   if (authenticated === null) {
     return <FullScreenLoader label="Securing your workspace" />;
@@ -115,15 +132,18 @@ export default function App() {
             <span>ECD Digital Strategy</span>
             <strong>{pageTitle(page)}</strong>
           </div>
-          <div className="topbar-status"><ShieldCheck size={16} /> Secure admin</div>
+          <TopbarAutomationToggle
+            enabled={automationEnabled}
+            saving={savingAutomation}
+            onToggle={toggleAutomation}
+          />
         </header>
         <div className="page">
           {page === "overview" && (
             <Overview
               onNavigate={navigate}
               automationEnabled={automationEnabled}
-              onAutomationChange={setAutomationEnabled}
-              notify={notify}
+              onAutomationSync={setAutomationEnabled}
             />
           )}
           {page === "stores" && <Stores notify={notify} />}
@@ -196,19 +216,16 @@ function Login({ onSuccess }: { onSuccess: () => void }) {
 function Overview({
   onNavigate,
   automationEnabled,
-  onAutomationChange,
-  notify,
+  onAutomationSync,
 }: {
   onNavigate: (page: Page) => void;
   automationEnabled: boolean;
-  onAutomationChange: (enabled: boolean) => void;
-  notify: (message: string) => void;
+  onAutomationSync: (enabled: boolean) => void;
 }) {
   const [data, setData] = useState<OverviewData | null>(null);
   const [activity, setActivity] = useState<ActivityItem[]>([]);
   const [storeNames, setStoreNames] = useState<Map<string, string>>(new Map());
   const [error, setError] = useState("");
-  const [savingAutomation, setSavingAutomation] = useState(false);
 
   const load = useCallback(async () => {
     setError("");
@@ -221,33 +238,11 @@ function Overview({
       setData(overview);
       setActivity(recent.items);
       setStoreNames(new Map(storeResult.stores.map((store) => [store.store_slug, storeLabel(store)])));
-      onAutomationChange(overview.automation.enabled);
+      onAutomationSync(overview.automation.enabled);
     } catch (err) {
       setError(errorText(err));
     }
-  }, [onAutomationChange]);
-
-  async function toggleAutomation(next: boolean) {
-    setSavingAutomation(true);
-    try {
-      const result = await patch<{ enabled: boolean }>("/settings/automation", {
-        enabled: next,
-      });
-      onAutomationChange(result.enabled);
-      setData((current) => current
-        ? {
-          ...current,
-          automation: { ...current.automation, enabled: result.enabled },
-          configuration: { ...current.configuration, scheduler: result.enabled },
-        }
-        : current);
-      notify(result.enabled ? "Automation turned on" : "Automation turned off");
-    } catch (err) {
-      notify(errorText(err));
-    } finally {
-      setSavingAutomation(false);
-    }
-  }
+  }, [onAutomationSync]);
 
   useEffect(() => { void load(); }, [load]);
   if (!data && !error) return <PageLoader />;
@@ -267,30 +262,6 @@ function Overview({
         description="Monitor your promo QA automation, spot issues, and take action."
         action={<button className="button secondary" onClick={load}><RefreshCw /> Refresh</button>}
       />
-      <section className={`automation-toggle ${automationEnabled ? "on" : "off"}`}>
-        <div className="automation-toggle-copy">
-          <div className={`automation-toggle-icon ${automationEnabled ? "on" : "off"}`}>
-            {automationEnabled ? <Zap /> : <Pause />}
-          </div>
-          <div>
-            <strong>{automationEnabled ? "Automatic QA is on" : "Automatic QA is off"}</strong>
-            <span>
-              {automationEnabled
-                ? "Scheduled checks run every 10 minutes and can complete or comment on Asana tasks."
-                : "Scheduled checks are paused. Manual QA still works from the Manual QA page."}
-            </span>
-          </div>
-        </div>
-        <label className="automation-switch">
-          <span>{automationEnabled ? "On" : "Off"}</span>
-          <input
-            type="checkbox"
-            checked={automationEnabled}
-            disabled={savingAutomation}
-            onChange={(event) => void toggleAutomation(event.target.checked)}
-          />
-        </label>
-      </section>
       <section className={`health-banner ${healthy ? "healthy" : "warning"}`}>
         <div className="health-icon">{healthy ? <CheckCircle2 /> : <AlertTriangle />}</div>
         <div>
@@ -561,9 +532,24 @@ function ActivityLog() {
       <PageHeading eyebrow="Audit trail" title="Activity log" description="A detailed history of every scheduled and manual task check." action={<button className="button secondary" onClick={load}><RefreshCw /> Refresh</button>} />
       <section className="panel filter-panel">
         <div className="filter-label"><Search /> Filter results</div>
-        <select value={status} onChange={(event) => setStatus(event.target.value)}><option value="">All statuses</option><option value="passed">Passed</option><option value="failed">Failed</option><option value="error">Error</option><option value="skipped_unregistered">Skipped</option></select>
-        <select value={store} onChange={(event) => setStore(event.target.value)}><option value="">All stores</option>{stores.map((item) => <option key={item.id} value={item.store_slug}>{storeLabel(item)}</option>)}</select>
-        <select value={trigger} onChange={(event) => setTrigger(event.target.value)}><option value="">All triggers</option><option value="cron">Scheduled</option><option value="manual">Manual</option></select>
+        <SelectField value={status} onChange={setStatus}>
+          <option value="">All statuses</option>
+          <option value="passed">Passed</option>
+          <option value="failed">Failed</option>
+          <option value="error">Error</option>
+          <option value="skipped_unregistered">Skipped</option>
+        </SelectField>
+        <SelectField value={store} onChange={setStore}>
+          <option value="">All stores</option>
+          {stores.map((item) => (
+            <option key={item.id} value={item.store_slug}>{storeLabel(item)}</option>
+          ))}
+        </SelectField>
+        <SelectField value={trigger} onChange={setTrigger}>
+          <option value="">All triggers</option>
+          <option value="cron">Scheduled</option>
+          <option value="manual">Manual</option>
+        </SelectField>
       </section>
       {loading ? <PageLoader /> : error ? <ErrorState message={error} retry={load} /> : (
         <section className="panel table-panel">
@@ -715,8 +701,64 @@ function RunResultPanel({ result }: { result: RunResponse }) {
   );
 }
 
+function SelectField({
+  value,
+  onChange,
+  children,
+  className = "",
+}: {
+  value: string;
+  onChange: (value: string) => void;
+  children: ReactNode;
+  className?: string;
+}) {
+  return (
+    <div className={`select-wrap ${className}`.trim()}>
+      <select
+        className="select-field"
+        value={value}
+        onChange={(event) => onChange(event.target.value)}
+      >
+        {children}
+      </select>
+      <ChevronDown className="select-icon" aria-hidden="true" />
+    </div>
+  );
+}
+
 function NavItem({ icon, label, active, onClick }: { icon: ReactNode; label: string; active: boolean; onClick: () => void }) {
   return <button className={`nav-item ${active ? "active" : ""}`} onClick={onClick}>{icon}<span>{label}</span>{active && <span className="nav-indicator" />}</button>;
+}
+
+function TopbarAutomationToggle({
+  enabled,
+  saving,
+  onToggle,
+}: {
+  enabled: boolean;
+  saving: boolean;
+  onToggle: (next: boolean) => void;
+}) {
+  return (
+    <div className={`topbar-automation ${enabled ? "on" : "off"}`}>
+      <div className={`topbar-automation-icon ${enabled ? "on" : "off"}`}>
+        {enabled ? <Zap size={16} /> : <Pause size={16} />}
+      </div>
+      <div className="topbar-automation-copy">
+        <strong>{enabled ? "Automatic QA is on" : "Automatic QA is off"}</strong>
+        <span>{enabled ? "Runs every 10 minutes" : "Scheduled checks paused"}</span>
+      </div>
+      <label className="automation-switch">
+        <span className="topbar-automation-label">{enabled ? "On" : "Off"}</span>
+        <input
+          type="checkbox"
+          checked={enabled}
+          disabled={saving}
+          onChange={(event) => void onToggle(event.target.checked)}
+        />
+      </label>
+    </div>
+  );
 }
 
 function PageHeading({ eyebrow, title, description, action }: { eyebrow: string; title: string; description: string; action?: ReactNode }) {
