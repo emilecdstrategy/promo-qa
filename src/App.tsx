@@ -415,13 +415,21 @@ function StoreDialog({ store, onClose, onSaved }: {
     setSaving(true);
     setError("");
     try {
-      const body = {
-        displayName,
-        adminUrl,
-        storeSlug: store ? undefined : slug,
-        token,
-        active,
-      };
+      const body = store
+        ? {
+            displayName,
+            storeSlug: store.store_slug,
+            shopDomain: store.shop_domain,
+            token,
+            active,
+          }
+        : {
+            displayName,
+            adminUrl,
+            storeSlug: slug,
+            token,
+            active,
+          };
       if (store) await patch(`/stores/${encodeURIComponent(store.store_slug)}`, body);
       else await post("/stores", body);
       onSaved(store ? "Store settings updated" : "Store connected successfully");
