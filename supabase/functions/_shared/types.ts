@@ -35,6 +35,31 @@ export interface TaskContext {
   editorTarget: ShopifyEditorTarget | null;
 }
 
+export interface PromoDesignSubtask {
+  name: string;
+  completed: boolean;
+  notes?: string;
+  assignee?: string;
+}
+
+export interface PromoDesignComment {
+  author?: string;
+  text: string;
+}
+
+export interface PromoDesignContext {
+  parentTask: AsanaTask | null;
+  subtasks: PromoDesignSubtask[];
+  comments: PromoDesignComment[];
+}
+
+export interface DesignReadinessAssessment {
+  designed: boolean;
+  confidence: number;
+  summary: string;
+  signals: string[];
+}
+
 export interface ExpectedBanner {
   label: string;
   promo_link: string | null;

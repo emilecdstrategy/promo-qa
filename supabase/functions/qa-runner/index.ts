@@ -1,6 +1,6 @@
 import { createClient } from "npm:@supabase/supabase-js@2";
 import { AnthropicClient } from "../_shared/ai.ts";
-import { AsanaClient, isPromoQaTask, isDueWithinDays } from "../_shared/asana.ts";
+import { AsanaClient, isPromoQaTask, isDueWithinDays, stripHtml } from "../_shared/asana.ts";
 import {
   sendAlertEmail,
   type SmtpConfig,
@@ -47,6 +47,7 @@ const encryptionKey = requiredEnv("STORE_TOKEN_ENCRYPTION_KEY");
 const runnerSecret = requiredEnv("QA_RUNNER_SECRET");
 const smtp = getSmtpConfig((name) => Deno.env.get(name));
 const MISSING_LINK_DUE_WINDOW_DAYS = 3;
+const DESIGN_READINESS_THRESHOLD = 0.7;
 const MISSING_LINK_COMMENT =
   "Hi! This promo QA task is due soon, but I don't see a Shopify theme editor / promo scheduler link in the task notes yet. Could you add it when the promo is ready to schedule?";
 
@@ -357,6 +358,31 @@ async function handleMissingEditorUrl(
     };
   }
 
+  const designContext = await asana.getPromoDesignContext(context.parent);
+  const designAssessment = await anthropic.assessDesignReadiness({
+    qaTaskName: context.task.name,
+    qaTaskNotes: stripHtml(context.task.notes ?? context.task.html_notes ?? ""),
+    parentName: context.parent?.name,
+    parentNotes: stripHtml(context.parent?.notes ?? context.parent?.html_notes ?? ""),
+    subtasks: designContext.subtasks,
+    comments: designContext.comments,
+  });
+  const designReady = designAssessment.designed &&
+    designAssessment.confidence >= DESIGN_READINESS_THRESHOLD;
+
+  if (!designReady) {
+    return {
+      ...resultMeta,
+      status: "skipped_not_ready",
+      action: "none",
+      details: {
+        reason: "Promo design still appears in progress on the parent task.",
+        waitingFor: "design",
+        designAssessment,
+      },
+    };
+  }
+
   const shouldComment = !input.dryRun &&
     (input.force || !await missingLinkAlreadyCommented(context.task));
   if (shouldComment) {
@@ -370,7 +396,11 @@ async function handleMissingEditorUrl(
       task: context.task,
       status: "skipped_not_ready",
       action: "commented",
-      verdict: { reason: waitingMessage, dueSoon: true },
+      verdict: {
+        reason: waitingMessage,
+        dueSoon: true,
+        designAssessment,
+      },
     });
   }
 
@@ -378,9 +408,12 @@ async function handleMissingEditorUrl(
     ...resultMeta,
     status: "skipped_not_ready",
     action: shouldComment ? "commented" : "none",
-    details: dueSoon
-      ? `${waitingMessage} Creator was notified because the task is due within ${MISSING_LINK_DUE_WINDOW_DAYS} days.`
-      : waitingMessage,
+    details: {
+      reason: waitingMessage,
+      dueSoon: true,
+      designAssessment,
+      notifiedCreator: shouldComment,
+    },
   };
 }
 

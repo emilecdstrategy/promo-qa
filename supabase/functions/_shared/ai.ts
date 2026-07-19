@@ -1,4 +1,9 @@
-import type { CandidateMatch, ParsedPromoSpec, QaVerdict } from "./types.ts";
+import type {
+  CandidateMatch,
+  DesignReadinessAssessment,
+  ParsedPromoSpec,
+  QaVerdict,
+} from "./types.ts";
 
 const ANTHROPIC_API = "https://api.anthropic.com/v1/messages";
 
@@ -129,6 +134,38 @@ Rules:
     validateQaVerdict(verdict);
     return verdict;
   }
+
+  async assessDesignReadiness(input: {
+    qaTaskName: string;
+    qaTaskNotes: string;
+    parentName?: string;
+    parentNotes?: string;
+    subtasks: Array<{
+      name: string;
+      completed: boolean;
+      notes?: string;
+      assignee?: string;
+    }>;
+    comments: Array<{ author?: string; text: string }>;
+  }): Promise<DesignReadinessAssessment> {
+    const assessment = await this.jsonMessage<DesignReadinessAssessment>(
+      `You decide whether a Shopify promo banner has finished design work and is realistically ready to be scheduled next.
+Return JSON only:
+{"designed":false,"confidence":0.0,"summary":"string","signals":["string"]}
+Rules:
+- Use the parent promo task notes, designer subtasks, and comments as evidence.
+- designed=true only when design/creative work appears finished or approved (for example completed design subtasks, uploaded banner assets, explicit design approval, or handoff language like "design done" / "ready to schedule").
+- designed=false when design is not started, still in progress, blocked, waiting on designer, or only brief/planning exists.
+- QA subtasks alone do not prove design is done.
+- If evidence is weak or mixed, set designed=false and explain in summary/signals.
+- confidence is 0..1. Keep confidence below 0.7 when uncertain.`,
+      input,
+      1200,
+    );
+
+    validateDesignReadiness(assessment);
+    return assessment;
+  }
 }
 
 function parseJsonResponse<T>(text: string): T {
@@ -156,5 +193,17 @@ function validateQaVerdict(value: QaVerdict): void {
   }
   if (typeof value.confidence !== "number") {
     throw new Error("Claude QA response omitted confidence");
+  }
+}
+
+function validateDesignReadiness(value: DesignReadinessAssessment): void {
+  if (typeof value?.designed !== "boolean") {
+    throw new Error("Claude design readiness response omitted designed");
+  }
+  if (typeof value.confidence !== "number") {
+    throw new Error("Claude design readiness response omitted confidence");
+  }
+  if (!Array.isArray(value.signals)) {
+    throw new Error("Claude design readiness response omitted signals");
   }
 }

@@ -1,4 +1,11 @@
-import type { AsanaTask, ShopifyEditorTarget, TaskContext } from "./types.ts";
+import type {
+  AsanaTask,
+  PromoDesignComment,
+  PromoDesignContext,
+  PromoDesignSubtask,
+  ShopifyEditorTarget,
+  TaskContext,
+} from "./types.ts";
 
 const ASANA_API = "https://app.asana.com/api/1.0";
 const TASK_FIELDS = [
@@ -162,6 +169,53 @@ export class AsanaClient {
     });
   }
 
+  async getPromoDesignContext(parent: AsanaTask | null): Promise<PromoDesignContext> {
+    if (!parent?.gid) {
+      return { parentTask: null, subtasks: [], comments: [] };
+    }
+
+    const subtaskQuery = new URLSearchParams({
+      opt_fields: "name,completed,notes,assignee.name",
+      limit: "100",
+    });
+    const subtasks = (await this.request<
+      Array<{
+        name: string;
+        completed?: boolean;
+        notes?: string;
+        assignee?: { name?: string };
+      }>
+    >(`/tasks/${parent.gid}/subtasks?${subtaskQuery}`)).data.map(
+      (subtask): PromoDesignSubtask => ({
+        name: subtask.name,
+        completed: Boolean(subtask.completed),
+        notes: stripHtml(subtask.notes ?? ""),
+        assignee: subtask.assignee?.name,
+      }),
+    );
+
+    const storyQuery = new URLSearchParams({
+      opt_fields: "type,text,html_text,created_by.name",
+      limit: "100",
+    });
+    const comments = (await this.request<
+      Array<{
+        type?: string;
+        text?: string;
+        html_text?: string;
+        created_by?: { name?: string };
+      }>
+    >(`/tasks/${parent.gid}/stories?${storyQuery}`)).data
+      .filter((story) => story.type === "comment")
+      .map((story): PromoDesignComment => ({
+        author: story.created_by?.name,
+        text: stripHtml(story.text ?? story.html_text ?? ""),
+      }))
+      .filter((comment) => comment.text.trim().length > 0);
+
+    return { parentTask: parent, subtasks, comments };
+  }
+
   async getTaskContext(taskGid: string): Promise<TaskContext> {
     const task = await this.getTask(taskGid);
     const parent = task.parent?.gid
@@ -236,4 +290,19 @@ function escapeHtml(value: string): string {
     .replaceAll(">", "&gt;")
     .replaceAll('"', "&quot;")
     .replaceAll("'", "&#39;");
+}
+
+export function stripHtml(value: string): string {
+  let text = value;
+  text = text.replace(/<br\s*\/?>/gi, "\n");
+  text = text.replace(/<\/p>/gi, "\n");
+  text = text.replace(/<[^>]+>/g, "");
+  text = text.replace(/&nbsp;/g, " ");
+  text = text.replace(/&amp;/g, "&");
+  text = text.replace(/&lt;/g, "<");
+  text = text.replace(/&gt;/g, ">");
+  text = text.replace(/&quot;/g, String.fromCharCode(34));
+  text = text.replace(/&#39;/g, String.fromCharCode(39));
+  text = text.replace(/\n{3,}/g, "\n\n");
+  return text.trim();
 }
