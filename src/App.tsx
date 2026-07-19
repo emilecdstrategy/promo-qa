@@ -1,4 +1,4 @@
-import { FormEvent, ReactNode, useCallback, useEffect, useState } from "react";
+import { FormEvent, ReactNode, useCallback, useEffect, useRef, useState } from "react";
 import {
   Activity,
   AlertTriangle,
@@ -533,24 +533,37 @@ function ActivityLog() {
       <PageHeading eyebrow="Audit trail" title="Activity log" description="A detailed history of every scheduled and manual task check." action={<button className="button secondary" onClick={load}><RefreshCw /> Refresh</button>} />
       <section className="panel filter-panel">
         <div className="filter-label"><Search /> Filter results</div>
-        <SelectField value={status} onChange={setStatus}>
-          <option value="">All statuses</option>
-          <option value="passed">Passed</option>
-          <option value="failed">Failed</option>
-          <option value="error">Error</option>
-          <option value="skipped_unregistered">Skipped</option>
-        </SelectField>
-        <SelectField value={store} onChange={setStore}>
-          <option value="">All stores</option>
-          {stores.map((item) => (
-            <option key={item.id} value={item.store_slug}>{storeLabel(item)}</option>
-          ))}
-        </SelectField>
-        <SelectField value={trigger} onChange={setTrigger}>
-          <option value="">All triggers</option>
-          <option value="cron">Scheduled</option>
-          <option value="manual">Manual</option>
-        </SelectField>
+        <SelectField
+          value={status}
+          onChange={setStatus}
+          options={[
+            { value: "", label: "All statuses" },
+            { value: "passed", label: "Passed" },
+            { value: "failed", label: "Failed" },
+            { value: "error", label: "Error" },
+            { value: "skipped_unregistered", label: "Skipped" },
+          ]}
+        />
+        <SelectField
+          value={store}
+          onChange={setStore}
+          options={[
+            { value: "", label: "All stores" },
+            ...stores.map((item) => ({
+              value: item.store_slug,
+              label: storeLabel(item),
+            })),
+          ]}
+        />
+        <SelectField
+          value={trigger}
+          onChange={setTrigger}
+          options={[
+            { value: "", label: "All triggers" },
+            { value: "cron", label: "Scheduled" },
+            { value: "manual", label: "Manual" },
+          ]}
+        />
       </section>
       {loading ? <PageLoader /> : error ? <ErrorState message={error} retry={load} /> : (
         <section className="panel table-panel">
@@ -705,24 +718,70 @@ function RunResultPanel({ result }: { result: RunResponse }) {
 function SelectField({
   value,
   onChange,
-  children,
+  options,
   className = "",
 }: {
   value: string;
   onChange: (value: string) => void;
-  children: ReactNode;
+  options: Array<{ value: string; label: string }>;
   className?: string;
 }) {
+  const [open, setOpen] = useState(false);
+  const rootRef = useRef<HTMLDivElement>(null);
+  const selected = options.find((option) => option.value === value) ?? options[0];
+
+  useEffect(() => {
+    if (!open) return;
+    function closeOnPointerDown(event: MouseEvent) {
+      if (!rootRef.current?.contains(event.target as Node)) setOpen(false);
+    }
+    function closeOnEscape(event: KeyboardEvent) {
+      if (event.key === "Escape") setOpen(false);
+    }
+    document.addEventListener("mousedown", closeOnPointerDown);
+    document.addEventListener("keydown", closeOnEscape);
+    return () => {
+      document.removeEventListener("mousedown", closeOnPointerDown);
+      document.removeEventListener("keydown", closeOnEscape);
+    };
+  }, [open]);
+
   return (
-    <div className={`select-wrap ${className}`.trim()}>
-      <select
-        className="select-field"
-        value={value}
-        onChange={(event) => onChange(event.target.value)}
+    <div
+      ref={rootRef}
+      className={`select-wrap ${open ? "is-open" : ""} ${className}`.trim()}
+    >
+      <button
+        type="button"
+        className="select-trigger"
+        aria-haspopup="listbox"
+        aria-expanded={open}
+        onClick={() => setOpen((current) => !current)}
       >
-        {children}
-      </select>
-      <ChevronDown className="select-icon" aria-hidden="true" />
+        <span className="select-trigger-label">{selected?.label ?? "Select"}</span>
+        <ChevronDown className="select-icon" aria-hidden="true" />
+      </button>
+      {open && (
+        <ul className="select-menu" role="listbox" aria-label="Options">
+          {options.map((option) => (
+            <li key={option.value || "__all__"} role="presentation">
+              <button
+                type="button"
+                role="option"
+                aria-selected={option.value === value}
+                className={`select-option ${option.value === value ? "is-selected" : ""}`}
+                onClick={() => {
+                  onChange(option.value);
+                  setOpen(false);
+                }}
+              >
+                <span>{option.label}</span>
+                {option.value === value && <Check aria-hidden="true" />}
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
     </div>
   );
 }
