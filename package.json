@@ -1,0 +1,13 @@
+{
+  "name": "promo-qa-automation",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --experimental-strip-types --test tests/*.test.mjs",
+    "qa:local": "node --env-file=.env.local scripts/local-run.mjs",
+    "store:seed": "node --env-file=.env.local scripts/seed-store.mjs"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

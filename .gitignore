@@ -1,0 +1,18 @@
+.env
+.env.local
+.env.*.local
+node_modules/
+**/node_modules/
+dist/
+supabase/.temp/
+supabase/functions/node_modules/
+.DS_Store
+*.log
+
+# Pulled theme JSON (store-specific, regenerated per QA run)
+themes/*
+!themes/.gitkeep
+
+# Legacy
+.qa-pull/
+shopify-auth/

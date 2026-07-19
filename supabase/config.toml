@@ -1,0 +1,4 @@
+project_id = "qa-promos"
+
+[functions.qa-runner]
+verify_jwt = true
