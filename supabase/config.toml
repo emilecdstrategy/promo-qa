@@ -1,4 +1,7 @@
 project_id = "bcmwdpvsmxuzsqrcooos"
 
 [functions.qa-runner]
-verify_jwt = true
+verify_jwt = false
+
+[functions.admin-api]
+verify_jwt = false

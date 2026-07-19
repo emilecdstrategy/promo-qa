@@ -7,17 +7,15 @@ if (!taskGid) {
 const supabaseUrl = required("SUPABASE_URL").replace(/\/$/, "");
 const functionUrl = process.env.SUPABASE_FUNCTION_URL ??
   `${supabaseUrl}/functions/v1/qa-runner`;
-const authorization = process.env.SUPABASE_ANON_KEY ??
-  process.env.SUPABASE_SERVICE_ROLE_KEY;
-if (!authorization) {
-  throw new Error("Set SUPABASE_ANON_KEY or SUPABASE_SERVICE_ROLE_KEY in .env.local");
-}
+const runnerSecret = required("QA_RUNNER_SECRET");
 
 const response = await fetch(functionUrl, {
   method: "POST",
   headers: {
-    Authorization: `Bearer ${authorization}`,
     "Content-Type": "application/json",
+    "x-qa-runner-secret": runnerSecret,
+    "x-qa-trigger": "manual",
+    "x-qa-requested-by": "local-cli",
   },
   body: JSON.stringify({ taskGid, dryRun: true, force: true }),
 });

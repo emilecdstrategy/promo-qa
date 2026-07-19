@@ -44,6 +44,7 @@ const anthropic = new AnthropicClient(
   Deno.env.get("ANTHROPIC_MODEL") ?? "claude-sonnet-4-5",
 );
 const encryptionKey = requiredEnv("STORE_TOKEN_ENCRYPTION_KEY");
+const runnerSecret = requiredEnv("QA_RUNNER_SECRET");
 const smtp = smtpConfigFromEnv((name) => Deno.env.get(name));
 
 interface RunRequest {
@@ -54,8 +55,14 @@ interface RunRequest {
 
 interface RunResult {
   taskGid: string;
+  taskName?: string;
+  parentTaskGid?: string;
+  storeSlug?: string;
+  themeId?: string;
+  publishedThemeId?: string;
   status: string;
   action: string;
+  confidence?: number;
   details?: unknown;
 }
 
@@ -64,8 +71,23 @@ Deno.serve(async (request) => {
     return Response.json({ error: "Method not allowed" }, { status: 405 });
   }
 
+  if (!safeEqual(request.headers.get("x-qa-runner-secret") ?? "", runnerSecret)) {
+    return Response.json({ error: "Unauthorized" }, { status: 401 });
+  }
+
+  let automationRunId: string | null = null;
+  const requestStartedAt = Date.now();
   try {
     const input = await request.json().catch(() => ({})) as RunRequest;
+    const trigger = request.headers.get("x-qa-trigger") === "cron"
+      ? "cron"
+      : "manual";
+    automationRunId = await createAutomationRun({
+      trigger,
+      dryRun: Boolean(input.dryRun),
+      taskGid: input.taskGid,
+      requestedBy: request.headers.get("x-qa-requested-by") ?? trigger,
+    });
     const tasks = input.taskGid
       ? [await asana.getTask(input.taskGid)]
       : (await asana.listIncompleteTasks(EMIL_ASANA_GID, ASANA_WORKSPACE_GID))
@@ -73,8 +95,10 @@ Deno.serve(async (request) => {
 
     const results: RunResult[] = [];
     for (const task of tasks) {
+      const taskStartedAt = Date.now();
+      let result: RunResult;
       try {
-        results.push(await processTask(task, input));
+        result = await processTask(task, input);
       } catch (error) {
         const message = errorMessage(error);
         if (!input.dryRun) {
@@ -90,22 +114,42 @@ Deno.serve(async (request) => {
             `Task ${task.gid} could not be processed.\n\n${message}`,
           );
         }
-        results.push({
+        result = {
           taskGid: task.gid,
+          taskName: task.name,
           status: "error",
           action: "none",
           details: message,
-        });
+        };
       }
+      results.push(result);
+      await recordAutomationRunItem(
+        automationRunId,
+        result,
+        taskStartedAt,
+      );
     }
 
+    await finishAutomationRun(
+      automationRunId,
+      results,
+      requestStartedAt,
+    );
     return Response.json({
       ok: results.every((result) => result.status !== "error"),
+      runId: automationRunId,
       dryRun: Boolean(input.dryRun),
       processed: results.length,
       results,
     });
   } catch (error) {
+    if (automationRunId) {
+      await failAutomationRun(
+        automationRunId,
+        errorMessage(error),
+        requestStartedAt,
+      ).catch(console.error);
+    }
     return Response.json({ ok: false, error: errorMessage(error) }, {
       status: 500,
     });
@@ -117,6 +161,13 @@ async function processTask(
   input: RunRequest,
 ): Promise<RunResult> {
   const context = await asana.getTaskContext(task.gid);
+  const resultMeta = {
+    taskGid: task.gid,
+    taskName: context.task.name,
+    parentTaskGid: context.parent?.gid ?? context.task.parent?.gid,
+    storeSlug: context.editorTarget.storeSlug,
+    themeId: context.editorTarget.themeId,
+  };
   const store = await getStore(context.editorTarget.storeSlug);
 
   if (!store) {
@@ -138,7 +189,7 @@ async function processTask(
       });
     }
     return {
-      taskGid: task.gid,
+      ...resultMeta,
       status: "skipped_unregistered",
       action: input.dryRun ? "none" : "emailed",
       details: message,
@@ -146,7 +197,11 @@ async function processTask(
   }
 
   if (!input.force && !input.dryRun && await alreadyProcessed(context.task)) {
-    return { taskGid: task.gid, status: "skipped_unchanged", action: "none" };
+    return {
+      ...resultMeta,
+      status: "skipped_unchanged",
+      action: "none",
+    };
   }
 
   if (!input.dryRun) {
@@ -196,9 +251,11 @@ async function processTask(
 
   if (input.dryRun) {
     return {
-      taskGid: task.gid,
+      ...resultMeta,
+      publishedThemeId,
       status: confidentlyPassed ? "passed" : "failed",
       action: "none",
+      confidence: Math.min(spec.confidence, verdict.confidence),
       details: { spec, matches, verdict, publishedThemeId },
     };
   }
@@ -214,9 +271,11 @@ async function processTask(
       confidence: Math.min(spec.confidence, verdict.confidence),
     });
     return {
-      taskGid: task.gid,
+      ...resultMeta,
+      publishedThemeId,
       status: "passed",
       action: "completed",
+      confidence: Math.min(spec.confidence, verdict.confidence),
       details: verdict,
     };
   }
@@ -243,9 +302,11 @@ async function processTask(
     confidence: Math.min(spec.confidence, verdict.confidence),
   });
   return {
-    taskGid: task.gid,
+    ...resultMeta,
+    publishedThemeId,
     status: "failed",
     action: "commented",
+    confidence: Math.min(spec.confidence, verdict.confidence),
     details: verdict,
   };
 }
@@ -300,6 +361,86 @@ async function recordRun(input: {
   if (error) throw error;
 }
 
+async function createAutomationRun(input: {
+  trigger: "cron" | "manual";
+  dryRun: boolean;
+  taskGid?: string;
+  requestedBy: string;
+}): Promise<string> {
+  const { data, error } = await supabase.from("automation_runs").insert({
+    trigger: input.trigger,
+    dry_run: input.dryRun,
+    requested_task_gid: input.taskGid ?? null,
+    requested_by: input.requestedBy,
+  }).select("id").single();
+  if (error) throw error;
+  return data.id;
+}
+
+async function recordAutomationRunItem(
+  runId: string,
+  result: RunResult,
+  startedAt: number,
+): Promise<void> {
+  const completedAt = new Date();
+  const { error } = await supabase.from("automation_run_items").insert({
+    run_id: runId,
+    task_gid: result.taskGid,
+    task_name: result.taskName ?? null,
+    parent_task_gid: result.parentTaskGid ?? null,
+    store_slug: result.storeSlug ?? null,
+    theme_id: result.themeId ?? null,
+    published_theme_id: result.publishedThemeId ?? null,
+    status: result.status,
+    action_taken: result.action,
+    confidence: result.confidence ?? null,
+    details: result.details ?? {},
+    error_message: result.status === "error" ? String(result.details ?? "") : null,
+    started_at: new Date(startedAt).toISOString(),
+    completed_at: completedAt.toISOString(),
+    duration_ms: completedAt.getTime() - startedAt,
+  });
+  if (error) throw error;
+}
+
+async function finishAutomationRun(
+  runId: string,
+  results: RunResult[],
+  startedAt: number,
+): Promise<void> {
+  const completedAt = new Date();
+  const errorCount = results.filter((result) => result.status === "error").length;
+  const failedCount = results.filter((result) => result.status === "failed").length;
+  const { error } = await supabase.from("automation_runs").update({
+    status: errorCount === 0 ? "completed" : "partial",
+    total_tasks: results.length,
+    passed_count: results.filter((result) => result.status === "passed").length,
+    failed_count: failedCount,
+    skipped_count: results.filter((result) => result.status.startsWith("skipped"))
+      .length,
+    error_count: errorCount,
+    completed_at: completedAt.toISOString(),
+    duration_ms: completedAt.getTime() - startedAt,
+  }).eq("id", runId);
+  if (error) throw error;
+}
+
+async function failAutomationRun(
+  runId: string,
+  message: string,
+  startedAt: number,
+): Promise<void> {
+  const completedAt = new Date();
+  const { error } = await supabase.from("automation_runs").update({
+    status: "error",
+    error_count: 1,
+    error_message: message,
+    completed_at: completedAt.toISOString(),
+    duration_ms: completedAt.getTime() - startedAt,
+  }).eq("id", runId);
+  if (error) throw error;
+}
+
 async function notify(
   config: SmtpConfig | null,
   subject: string,
@@ -318,4 +459,15 @@ function errorMessage(error: unknown): string {
   return error instanceof Error
     ? `${error.name}: ${error.message}`
     : String(error);
+}
+
+function safeEqual(left: string, right: string): boolean {
+  const leftBytes = new TextEncoder().encode(left);
+  const rightBytes = new TextEncoder().encode(right);
+  let difference = leftBytes.length ^ rightBytes.length;
+  const length = Math.max(leftBytes.length, rightBytes.length);
+  for (let index = 0; index < length; index++) {
+    difference |= (leftBytes[index] ?? 0) ^ (rightBytes[index] ?? 0);
+  }
+  return difference === 0;
 }

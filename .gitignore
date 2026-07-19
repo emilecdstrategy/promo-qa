@@ -16,3 +16,6 @@ themes/*
 # Legacy
 .qa-pull/
 shopify-auth/
+
+# Local Netlify folder
+.netlify
