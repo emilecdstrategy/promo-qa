@@ -1,4 +1,4 @@
-project_id = "qa-promos"
+project_id = "bcmwdpvsmxuzsqrcooos"
 
 [functions.qa-runner]
 verify_jwt = true
