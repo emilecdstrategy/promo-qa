@@ -813,7 +813,7 @@ function TopbarAutomationToggle({
         {enabled ? <Zap size={16} /> : <Pause size={16} />}
       </div>
       <div className="topbar-automation-copy">
-        <strong>{enabled ? "Automatic QA is on" : "Automatic QA is off"}</strong>
+        <strong>Automatic QA</strong>
         <span>{enabled ? "Runs every 10 minutes" : "Scheduled checks paused"}</span>
       </div>
       <label className="automation-switch">

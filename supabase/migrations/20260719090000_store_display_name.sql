@@ -11,6 +11,7 @@ alter table public.stores
 
 drop function if exists public.register_promo_qa_store(text, text, text, text);
 drop function if exists public.update_promo_qa_store(text, text, text, boolean);
+drop function if exists public.list_promo_qa_stores();
 
 create or replace function public.register_promo_qa_store(
   p_store_slug text,
@@ -147,6 +148,10 @@ grant execute on function public.register_promo_qa_store(text, text, text, text,
   to service_role;
 grant execute on function public.update_promo_qa_store(text, text, boolean)
   to service_role;
+
+revoke all on function public.list_promo_qa_stores()
+  from public, anon, authenticated;
+grant execute on function public.list_promo_qa_stores() to service_role;
 
 update public.stores
 set display_name = 'Power Planter'
