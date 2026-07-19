@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" role="img" aria-label="Promo QA">
+  <defs>
+    <linearGradient id="promo-qa-mark" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#a093ff" />
+      <stop offset="100%" stop-color="#6f5ee8" />
+    </linearGradient>
+  </defs>
+  <rect width="32" height="32" rx="9" fill="url(#promo-qa-mark)" />
+  <path
+    fill="#ffffff"
+    d="M18.2 4.5 9.5 17.2h5.3L12.8 27.5l8.7-12.7h-5.3L18.2 4.5z"
+  />
+</svg>

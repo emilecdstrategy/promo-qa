@@ -10,7 +10,7 @@ export interface Store {
   id: string;
   store_slug: string;
   shop_domain: string;
-  display_name: string;
+  display_name?: string;
   active: boolean;
   has_token: boolean;
   created_at: string;

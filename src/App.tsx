@@ -830,7 +830,8 @@ function titleCase(value: string) {
 }
 
 function storeLabel(store: Pick<Store, "display_name" | "store_slug">) {
-  return store.display_name.trim() || titleCase(store.store_slug);
+  const name = store.display_name?.trim();
+  return name || titleCase(store.store_slug);
 }
 
 function storeInitials(store: Pick<Store, "display_name" | "store_slug">) {
