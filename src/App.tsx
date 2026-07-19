@@ -798,7 +798,7 @@ function SelectField({
 }
 
 function StoreFavicon({ domain, label }: { domain: string; label: string }) {
-  const [source, setSource] = useState<"direct" | "google" | "failed">("direct");
+  const [source, setSource] = useState<"duckduckgo" | "google" | "failed">("duckduckgo");
   const normalized = domain.trim().toLowerCase();
 
   if (source === "failed") {
@@ -809,9 +809,9 @@ function StoreFavicon({ domain, label }: { domain: string; label: string }) {
     );
   }
 
-  const src = source === "direct"
-    ? `https://${normalized}/favicon.ico`
-    : storeFaviconFallbackUrl(normalized);
+  const src = source === "duckduckgo"
+    ? storeFaviconPrimaryUrl(normalized)
+    : storeFaviconSecondaryUrl(normalized);
 
   return (
     <div className="store-avatar store-avatar-image">
@@ -822,7 +822,7 @@ function StoreFavicon({ domain, label }: { domain: string; label: string }) {
         decoding="async"
         referrerPolicy="no-referrer"
         onError={() => {
-          setSource((current) => (current === "direct" ? "google" : "failed"));
+          setSource((current) => (current === "duckduckgo" ? "google" : "failed"));
         }}
       />
       <span className="sr-only">{label}</span>
@@ -830,8 +830,13 @@ function StoreFavicon({ domain, label }: { domain: string; label: string }) {
   );
 }
 
-function storeFaviconFallbackUrl(domain: string) {
-  return `https://www.google.com/s2/favicons?domain=${encodeURIComponent(domain)}&sz=64`;
+function storeFaviconPrimaryUrl(domain: string) {
+  return `https://icons.duckduckgo.com/ip3/${encodeURIComponent(domain)}.ico`;
+}
+
+function storeFaviconSecondaryUrl(domain: string) {
+  const siteUrl = encodeURIComponent(`https://${domain}`);
+  return `https://t1.gstatic.com/faviconV2?client=SOCIAL&type=FAVICON&fallback_opts=TYPE,SIZE,URL&url=${siteUrl}&size=64`;
 }
 
 function NavItem({ icon, label, active, onClick }: { icon: ReactNode; label: string; active: boolean; onClick: () => void }) {
