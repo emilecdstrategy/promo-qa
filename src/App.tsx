@@ -392,7 +392,9 @@ function StoreDialog({ store, onClose, onSaved }: {
   onClose: () => void;
   onSaved: (message: string) => void;
 }) {
-  const [displayName, setDisplayName] = useState(store?.display_name ?? "");
+  const [displayName, setDisplayName] = useState(
+    store?.display_name?.trim() || (store ? storeLabel(store) : ""),
+  );
   const [adminUrl, setAdminUrl] = useState("");
   const [slug, setSlug] = useState(store?.store_slug ?? "");
   const [token, setToken] = useState("");

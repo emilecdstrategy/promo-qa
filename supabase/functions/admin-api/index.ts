@@ -73,7 +73,7 @@ async function listStores() {
 }
 
 async function createStore(raw: unknown) {
-  const body = validateStoreBody(raw, true);
+  const body = validateCreateStoreBody(raw);
   const { error } = await supabase.rpc("register_promo_qa_store", {
     p_store_slug: body.storeSlug,
     p_theme_access_token: body.token,
@@ -85,7 +85,7 @@ async function createStore(raw: unknown) {
 }
 
 async function updateStore(currentSlug: string, raw: unknown) {
-  const body = validateStoreBody(raw, false);
+  const body = validateUpdateStoreBody(raw);
   const { error } = await supabase.rpc("update_promo_qa_store", {
     p_current_slug: currentSlug,
     p_display_name: body.displayName,
@@ -235,29 +235,40 @@ async function invokeRunner(raw: unknown, request: Request) {
   return result;
 }
 
-function validateStoreBody(raw: unknown, requireToken: boolean) {
+function validateCreateStoreBody(raw: unknown) {
   if (!isObject(raw)) throw new Error("Invalid store payload");
-  const displayName = String(raw.displayName ?? "").trim();
+  const fields = validateStoreFields(raw, true);
   const adminUrl = String(raw.adminUrl ?? "").trim();
   const manualSlug = String(raw.storeSlug ?? "").trim().toLowerCase();
-  const parsedSlug = parseShopifyAdminSlug(adminUrl);
-  const storeSlug = parsedSlug ?? manualSlug;
-  const token = String(raw.token ?? "").trim();
+  const storeSlug = parseShopifyAdminSlug(adminUrl) ?? manualSlug;
 
-  if (!displayName) {
-    throw new Error("Enter a client name for this store");
-  }
   if (!/^[a-z0-9][a-z0-9-]*$/.test(storeSlug)) {
     throw new Error(
       "Paste a Shopify admin URL or enter the store handle from admin.shopify.com/store/{handle}",
     );
   }
+
+  return { ...fields, storeSlug };
+}
+
+function validateUpdateStoreBody(raw: unknown) {
+  if (!isObject(raw)) throw new Error("Invalid store payload");
+  return validateStoreFields(raw, false);
+}
+
+function validateStoreFields(raw: Record<string, unknown>, requireToken: boolean) {
+  const displayName = String(raw.displayName ?? "").trim();
+  const token = String(raw.token ?? "").trim();
+
+  if (!displayName) {
+    throw new Error("Enter a client name for this store");
+  }
   if ((requireToken || token) && !/^shptka_[A-Za-z0-9]+$/.test(token)) {
     throw new Error("Enter a valid Theme Access password beginning with shptka_");
   }
+
   return {
     displayName,
-    storeSlug,
     token,
     active: raw.active !== false,
   };
