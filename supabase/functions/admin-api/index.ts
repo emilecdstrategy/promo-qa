@@ -164,7 +164,7 @@ async function getOverview() {
         .length,
     },
     lastRun: latest,
-    nextRunAt: nextTenMinuteBoundary(),
+    nextRunAt: nextTwentyMinuteBoundary(),
     recent: {
       total: recent.length,
       passed: recent.filter((item) => item.status === "passed").length,
@@ -286,10 +286,10 @@ function parseTaskGid(value: string): string | null {
   return matches.at(-1)?.[1] ?? null;
 }
 
-function nextTenMinuteBoundary(): string {
+function nextTwentyMinuteBoundary(): string {
   const next = new Date();
   next.setUTCSeconds(0, 0);
-  next.setUTCMinutes(Math.ceil((next.getUTCMinutes() + 0.01) / 10) * 10);
+  next.setUTCMinutes(Math.ceil((next.getUTCMinutes() + 0.01) / 20) * 20);
   return next.toISOString();
 }
 

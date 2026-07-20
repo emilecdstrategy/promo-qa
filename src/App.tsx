@@ -109,7 +109,7 @@ export default function App() {
             <span className={automationEnabled ? "live-dot" : "paused-dot"} />
             <div>
               <strong>{automationEnabled ? "Automation live" : "Automation paused"}</strong>
-              <span>{automationEnabled ? "Runs every 10 minutes" : "Scheduled checks are off"}</span>
+              <span>{automationEnabled ? "Runs every 20 minutes" : "Scheduled checks are off"}</span>
             </div>
           </div>
           <button
@@ -300,7 +300,7 @@ function Overview({
           <div className="config-list">
             <ConfigRow
               label="Scheduler"
-              detail={automationEnabled ? "Every 10 minutes" : "Paused"}
+              detail={automationEnabled ? "Every 20 minutes" : "Paused"}
               ok={automationEnabled}
             />
             <ConfigRow label="Asana connection" detail="Task access ready" ok={data.configuration.asana} />
@@ -859,7 +859,7 @@ function TopbarAutomationToggle({
       </div>
       <div className="topbar-automation-copy">
         <strong>Automatic QA</strong>
-        <span>{enabled ? "Runs every 10 minutes" : "Scheduled checks paused"}</span>
+        <span>{enabled ? "Runs every 20 minutes" : "Scheduled checks paused"}</span>
       </div>
       <label className="automation-switch">
         <span className="topbar-automation-label">{enabled ? "On" : "Off"}</span>
