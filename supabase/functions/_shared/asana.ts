@@ -144,7 +144,7 @@ export class AsanaClient {
       }</a> `
       : "";
     const htmlText = `<body>${mention}${
-      escapeHtml(message).replaceAll("\n", "<br>")
+      escapeAsanaCommentText(message).replaceAll("\n", "<br>")
     }</body>`;
 
     if (creator) {
@@ -159,6 +159,25 @@ export class AsanaClient {
     await this.request(`/tasks/${taskGid}/stories`, {
       method: "POST",
       body: JSON.stringify({ data: { html_text: htmlText } }),
+    });
+  }
+
+  async hasCommentContaining(taskGid: string, needle: string): Promise<boolean> {
+    const normalizedNeedle = needle.trim().toLowerCase();
+    if (!normalizedNeedle) return false;
+
+    const query = new URLSearchParams({
+      opt_fields: "type,text,html_text",
+      limit: "100",
+    });
+    const stories = (await this.request<
+      Array<{ type?: string; text?: string; html_text?: string }>
+    >(`/tasks/${taskGid}/stories?${query}`)).data;
+
+    return stories.some((story) => {
+      if (story.type !== "comment") return false;
+      const text = stripHtml(story.text ?? story.html_text ?? "").toLowerCase();
+      return text.includes(normalizedNeedle);
     });
   }
 
@@ -290,6 +309,13 @@ function escapeHtml(value: string): string {
     .replaceAll(">", "&gt;")
     .replaceAll('"', "&quot;")
     .replaceAll("'", "&#39;");
+}
+
+function escapeAsanaCommentText(value: string): string {
+  return value
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;");
 }
 
 export function stripHtml(value: string): string {

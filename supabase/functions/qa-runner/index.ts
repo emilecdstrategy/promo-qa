@@ -49,7 +49,9 @@ const smtp = getSmtpConfig((name) => Deno.env.get(name));
 const MISSING_LINK_DUE_WINDOW_DAYS = 3;
 const DESIGN_READINESS_THRESHOLD = 0.7;
 const MISSING_LINK_COMMENT =
-  "Hi! This promo QA task is due soon, but I don't see a Shopify theme editor / promo scheduler link in the task notes yet. Could you add it when the promo is ready to schedule?";
+  "Hi! This promo QA task is due soon, but I do not see a Shopify theme editor / promo scheduler link in the task notes yet. Could you add it when the promo is ready to schedule?";
+const MISSING_LINK_COMMENT_FINGERPRINT =
+  "promo scheduler link in the task notes yet";
 
 interface RunRequest {
   taskGid?: string;
@@ -384,13 +386,9 @@ async function handleMissingEditorUrl(
   }
 
   const shouldComment = !input.dryRun &&
-    (input.force || !await missingLinkAlreadyCommented(context.task));
+    (input.force ||
+      !await missingLinkReminderAlreadySent(context.task.gid));
   if (shouldComment) {
-    await asana.addQaComment(
-      context.task.gid,
-      context.creator,
-      MISSING_LINK_COMMENT,
-    );
     await recordRun({
       context,
       task: context.task,
@@ -400,8 +398,14 @@ async function handleMissingEditorUrl(
         reason: waitingMessage,
         dueSoon: true,
         designAssessment,
+        reminderSent: true,
       },
     });
+    await asana.addQaComment(
+      context.task.gid,
+      context.creator,
+      MISSING_LINK_COMMENT,
+    );
   }
 
   return {
@@ -417,19 +421,18 @@ async function handleMissingEditorUrl(
   };
 }
 
-async function missingLinkAlreadyCommented(task: AsanaTask): Promise<boolean> {
+async function missingLinkReminderAlreadySent(taskGid: string): Promise<boolean> {
+  if (await asana.hasCommentContaining(taskGid, MISSING_LINK_COMMENT_FINGERPRINT)) {
+    return true;
+  }
+
   const { data, error } = await supabase
     .from("qa_runs")
-    .select("status,action_taken,source_modified_at")
-    .eq("asana_task_gid", task.gid)
+    .select("status,action_taken")
+    .eq("asana_task_gid", taskGid)
     .maybeSingle();
   if (error) throw error;
-  if (!data || data.status !== "skipped_not_ready" || data.action_taken !== "commented") {
-    return false;
-  }
-  if (!task.modified_at || !data.source_modified_at) return true;
-  return new Date(data.source_modified_at).getTime() >=
-    new Date(task.modified_at).getTime();
+  return data?.status === "skipped_not_ready" && data.action_taken === "commented";
 }
 
 async function isAutomationEnabled(): Promise<boolean> {
