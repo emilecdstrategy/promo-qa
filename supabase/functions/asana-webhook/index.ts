@@ -2,7 +2,7 @@ import { createClient } from "npm:@supabase/supabase-js@2";
 import {
   AsanaClient,
   isPromoQaTask,
-  verifyAsanaWebhookSignature,
+  verifyAsanaWebhookSignatureAgainstSecrets,
 } from "../_shared/asana.ts";
 import { invokeQaRunner } from "../_shared/runner.ts";
 import type { AsanaWebhookEvent, AsanaWebhookPayload } from "../_shared/types.ts";
@@ -41,14 +41,18 @@ Deno.serve(async (request) => {
   }
 
   try {
-    const secret = await getWebhookSecret();
-    if (!secret) {
+    const secrets = await getWebhookSecrets();
+    if (!secrets.length) {
       console.error("Asana webhook received before a hook secret was stored");
       return new Response("Webhook secret not configured", { status: 500 });
     }
 
     const signature = request.headers.get("X-Hook-Signature");
-    if (!await verifyAsanaWebhookSignature(secret, rawBody, signature)) {
+    if (!await verifyAsanaWebhookSignatureAgainstSecrets(
+      secrets,
+      rawBody,
+      signature,
+    )) {
       return new Response("Invalid signature", { status: 401 });
     }
 
@@ -133,9 +137,9 @@ async function resolveTaskGidFromEvent(
   return null;
 }
 
-async function getWebhookSecret(): Promise<string | null> {
+async function getWebhookSecrets(): Promise<string[]> {
   const envSecret = Deno.env.get("ASANA_WEBHOOK_SECRET");
-  if (envSecret) return envSecret;
+  if (envSecret) return [envSecret];
 
   const { data, error } = await supabase
     .from("promo_qa_settings")
@@ -143,17 +147,40 @@ async function getWebhookSecret(): Promise<string | null> {
     .eq("key", "asana_webhook_secret")
     .maybeSingle();
   if (error) throw error;
-  const secret = data?.value?.secret;
-  return typeof secret === "string" && secret.length > 0 ? secret : null;
+  return parseWebhookSecrets(data?.value);
 }
 
 async function storeWebhookSecret(secret: string): Promise<void> {
+  const secrets = [...new Set([...(await getWebhookSecrets()), secret])];
   const { error } = await supabase.from("promo_qa_settings").upsert({
     key: "asana_webhook_secret",
-    value: { secret },
+    value: {
+      secret: secrets[0],
+      secrets,
+    },
     updated_at: new Date().toISOString(),
   }, { onConflict: "key" });
   if (error) throw error;
+}
+
+function parseWebhookSecrets(value: unknown): string[] {
+  if (!value || typeof value !== "object") return [];
+
+  const record = value as { secret?: unknown; secrets?: unknown };
+  const secrets: string[] = [];
+
+  if (typeof record.secret === "string" && record.secret.length > 0) {
+    secrets.push(record.secret);
+  }
+  if (Array.isArray(record.secrets)) {
+    for (const entry of record.secrets) {
+      if (typeof entry === "string" && entry.length > 0 && !secrets.includes(entry)) {
+        secrets.push(entry);
+      }
+    }
+  }
+
+  return secrets;
 }
 
 async function isAutomationEnabled(): Promise<boolean> {

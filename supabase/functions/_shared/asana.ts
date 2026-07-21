@@ -258,8 +258,8 @@ export class AsanaClient {
     );
   }
 
-  async createWorkspaceWebhook(
-    workspaceGid: string,
+  async createProjectWebhook(
+    projectGid: string,
     targetUrl: string,
   ): Promise<{ gid: string; secret: string | null; active: boolean }> {
     const response = await fetch(`${ASANA_API}/webhooks`, {
@@ -270,7 +270,7 @@ export class AsanaClient {
       },
       body: JSON.stringify({
         data: {
-          resource: workspaceGid,
+          resource: projectGid,
           target: targetUrl,
           filters: [
             { resource_type: "task", action: "changed" },
@@ -292,9 +292,15 @@ export class AsanaClient {
       );
     }
 
+    const secret = response.headers.get("X-Hook-Secret") ??
+      (payload as AsanaEnvelope<{ gid: string; active: boolean }> & {
+        "X-Hook-Secret"?: string;
+      })["X-Hook-Secret"] ??
+      null;
+
     return {
       gid: payload.data.gid,
-      secret: response.headers.get("X-Hook-Secret"),
+      secret,
       active: payload.data.active,
     };
   }
@@ -432,6 +438,19 @@ export async function verifyAsanaWebhookSignature(
     .join("");
 
   return timingSafeEqualHex(expected, signature.trim().toLowerCase());
+}
+
+export async function verifyAsanaWebhookSignatureAgainstSecrets(
+  secrets: string[],
+  body: string,
+  signature: string | null,
+): Promise<boolean> {
+  for (const secret of secrets) {
+    if (await verifyAsanaWebhookSignature(secret, body, signature)) {
+      return true;
+    }
+  }
+  return false;
 }
 
 function timingSafeEqualHex(left: string, right: string): boolean {

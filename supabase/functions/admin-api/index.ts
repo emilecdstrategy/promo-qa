@@ -193,8 +193,15 @@ async function getWebhookConfigured(): Promise<boolean> {
     .eq("key", "asana_webhook_secret")
     .maybeSingle();
   if (error) throw error;
-  const secret = data?.value?.secret;
-  return typeof secret === "string" && secret.length > 0;
+  const value = data?.value;
+  if (!value || typeof value !== "object") return false;
+
+  const record = value as { secret?: unknown; secrets?: unknown };
+  if (typeof record.secret === "string" && record.secret.length > 0) {
+    return true;
+  }
+  return Array.isArray(record.secrets) &&
+    record.secrets.some((entry) => typeof entry === "string" && entry.length > 0);
 }
 
 async function listActivity(params: URLSearchParams) {
