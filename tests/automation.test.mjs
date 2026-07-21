@@ -144,3 +144,13 @@ test("normalizes encoded discount URLs", () => {
     true,
   );
 });
+
+test("treats Shopify smart collection links as equivalent to storefront URLs", () => {
+  assert.equal(
+    urlsEquivalent(
+      "https://classiccaladiums.com/collections/caladium_varieties",
+      "shopify://collections/caladium_varieties",
+    ),
+    true,
+  );
+});

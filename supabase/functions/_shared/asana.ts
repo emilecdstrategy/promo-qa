@@ -140,17 +140,6 @@ export class AsanaClient {
     creator: { gid: string; name: string } | null,
     message: string,
   ): Promise<void> {
-    const mention = creator
-      ? `<a data-asana-gid="${
-        escapeHtml(creator.gid)
-      }" data-asana-type="user" data-asana-dynamic="true" data-asana-accessible="true">@${
-        escapeHtml(creator.name)
-      }</a> `
-      : "";
-    const htmlText = `<body>${mention}${
-      escapeAsanaCommentText(message).replaceAll("\n", "<br>")
-    }</body>`;
-
     if (creator) {
       await this.request(`/tasks/${taskGid}/addFollowers`, {
         method: "POST",
@@ -160,9 +149,13 @@ export class AsanaClient {
       await new Promise((resolve) => setTimeout(resolve, 2000));
     }
 
+    const text = creator
+      ? `https://app.asana.com/0/${creator.gid}/list\n\n${message.trim()}`
+      : message.trim();
+
     await this.request(`/tasks/${taskGid}/stories`, {
       method: "POST",
-      body: JSON.stringify({ data: { html_text: htmlText } }),
+      body: JSON.stringify({ data: { text } }),
     });
   }
 
@@ -381,22 +374,6 @@ export function extractStoreSlugFromText(text: string): string | null {
     /admin\.shopify\.com\/store\/([a-z0-9-]+)/i,
   );
   return match ? match[1].toLowerCase() : null;
-}
-
-function escapeHtml(value: string): string {
-  return value
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;")
-    .replaceAll('"', "&quot;")
-    .replaceAll("'", "&#39;");
-}
-
-function escapeAsanaCommentText(value: string): string {
-  return value
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;");
 }
 
 export function stripHtml(value: string): string {

@@ -119,6 +119,7 @@ Rules:
 - Disabled blocks fail.
 - Missing expected links/dates or missing matching blocks lower confidence and fail.
 - URL encoding differences are acceptable only when decoded URL semantics are identical.
+- Shopify smart links such as shopify://collections/handle are equivalent to storefront /collections/handle URLs.
 - If configuredThemeId differs from publishedThemeId, add a warning but do not fail solely for that.
 - passed can be true only when every expected banner is matched and all dates/links match.
 - confidence is 0..1.`,

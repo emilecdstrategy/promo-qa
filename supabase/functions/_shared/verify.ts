@@ -126,16 +126,21 @@ export function applyDeterministicGuards(
 }
 
 export function formatFailureComment(verdict: QaVerdict): string {
-  const lines = ["Automated promo QA found configuration issues:"];
+  const lines = ["Automated promo QA found configuration issues:", ""];
   for (const banner of verdict.banners) {
     if (banner.ok) continue;
-    lines.push(
-      `- ${banner.label}: ${banner.issues.join("; ") || "did not pass"}`,
-    );
+    lines.push(`• ${banner.label}`);
+    for (const issue of banner.issues) {
+      lines.push(`  - ${issue}`);
+    }
+    lines.push("");
   }
-  for (const warning of verdict.warnings) lines.push(`- Warning: ${warning}`);
+  for (const warning of verdict.warnings ?? []) {
+    if (!isActionableWarning(warning)) continue;
+    lines.push(`Warning: ${warning}`);
+  }
   lines.push(`Confidence: ${Math.round(verdict.confidence * 100)}%`);
-  return lines.join("\n");
+  return lines.join("\n").trim();
 }
 
 function guardBanner(
@@ -246,6 +251,12 @@ function readMappedValue(
 }
 
 export function urlsEquivalent(left: string, right: string): boolean {
+  const leftIdentity = linkIdentity(left);
+  const rightIdentity = linkIdentity(right);
+  if (leftIdentity && rightIdentity && leftIdentity === rightIdentity) {
+    return true;
+  }
+
   try {
     const a = canonicalUrl(left);
     const b = canonicalUrl(right);
@@ -254,6 +265,35 @@ export function urlsEquivalent(left: string, right: string): boolean {
     return decodeRepeatedly(left).replace(/\/$/, "") ===
       decodeRepeatedly(right).replace(/\/$/, "");
   }
+}
+
+function linkIdentity(raw: string): string | null {
+  const decoded = decodeRepeatedly(raw.trim());
+  const shopifyMatch = decoded.match(/^shopify:\/\/([^/?#]+)\/([^/?#]+)/i);
+  if (shopifyMatch) {
+    return `${shopifyMatch[1].toLowerCase()}:${shopifyMatch[2].toLowerCase()}`;
+  }
+
+  try {
+    const url = new URL(decoded);
+    const collection = url.pathname.match(/\/collections\/([^/?#]+)/i);
+    if (collection) {
+      return `collections:${collection[1].toLowerCase()}`;
+    }
+    const product = url.pathname.match(/\/products\/([^/?#]+)/i);
+    if (product) {
+      return `products:${product[1].toLowerCase()}`;
+    }
+    return discountIdentity(canonicalUrl(decoded));
+  } catch {
+    return null;
+  }
+}
+
+function isActionableWarning(warning: string): boolean {
+  const normalized = warning.toLowerCase();
+  return !normalized.includes("spec ambiguity") &&
+    !normalized.includes("not a configuration issue");
 }
 
 function canonicalUrl(raw: string): string {
