@@ -9,6 +9,7 @@ import {
   ChevronRight,
   CircleDot,
   Clock3,
+  ExternalLink,
   Gauge,
   KeyRound,
   LoaderCircle,
@@ -293,7 +294,7 @@ function Overview({
         <section className="panel activity-panel">
           <PanelHeader title="Recent activity" subtitle="Latest task-level results" action={<button className="text-button" onClick={() => onNavigate("activity")}>View all <ChevronRight /></button>} />
           {activity.length
-            ? <div className="activity-list">{activity.map((item) => <ActivityRow key={item.id} item={item} storeName={item.store_slug ? storeNames.get(item.store_slug) : undefined} />)}</div>
+            ? <div className="activity-list">{activity.map((item) => <ActivityRow key={item.id} item={item} storeLabel={activityStoreLabel(item, storeNames)} />)}</div>
             : <EmptyState icon={<Activity />} title="No activity yet" text="The first scheduled or manual run will appear here." />}
         </section>
         <section className="panel">
@@ -591,8 +592,8 @@ function ActivityLog() {
               <tbody>{items.map((item) => (
                 <tr key={item.id} className="clickable-row" onClick={() => setSelected(item)}>
                   <td><StatusBadge status={item.status} /></td>
-                  <td><div className="task-cell"><strong>{item.task_name || `Task ${item.task_gid}`}</strong><span>{item.action_taken === "none" ? "No Asana action" : `Asana: ${item.action_taken}`}</span></div></td>
-                  <td>{item.store_slug ? storeNames.get(item.store_slug) ?? titleCase(item.store_slug) : "—"}</td>
+                  <td><div className="task-cell"><TaskLink taskGid={item.task_gid} taskName={item.task_name || `Task ${item.task_gid}`} /><span>{activitySubline(item, activityStoreLabel(item, storeNames))}</span></div></td>
+                  <td>{activityStoreLabel(item, storeNames)}</td>
                   <td><span className="trigger-badge">{triggerIcon(item.automation_runs.trigger)}{triggerLabel(item.automation_runs)}</span></td>
                   <td>{item.confidence == null ? "—" : `${Math.round(item.confidence * 100)}%`}</td>
                   <td className="muted">{relativeTime(item.started_at)}</td>
@@ -604,7 +605,7 @@ function ActivityLog() {
           {!items.length && <EmptyState icon={<Search />} title="No matching activity" text="Try changing the filters or run a manual QA check." />}
         </section>
       )}
-      {selected && <ActivityDrawer item={selected} storeName={selected.store_slug ? storeNames.get(selected.store_slug) ?? titleCase(selected.store_slug) : "Unknown"} onClose={() => setSelected(null)} />}
+      {selected && <ActivityDrawer item={selected} storeName={activityStoreLabel(selected, storeNames)} onClose={() => setSelected(null)} />}
     </>
   );
 }
@@ -615,7 +616,7 @@ function ActivityDrawer({ item, storeName, onClose }: { item: ActivityItem; stor
     <div className="drawer-backdrop" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
       <aside className="drawer">
         <div className="drawer-header">
-          <div><StatusBadge status={item.status} /><h2>{item.task_name || `Task ${item.task_gid}`}</h2><span>{formatDateTime(item.started_at)}</span></div>
+          <div><StatusBadge status={item.status} /><h2><TaskLink taskGid={item.task_gid} taskName={item.task_name || `Task ${item.task_gid}`} /></h2><span>{formatDateTime(item.started_at)}</span></div>
           <button className="icon-button" onClick={onClose}><X /></button>
         </div>
         <div className="drawer-body">
@@ -910,8 +911,8 @@ function ConfigRow({ label, detail, ok }: { label: string; detail: string; ok: b
   return <div className="config-row"><div className={`config-icon ${ok ? "ok" : ""}`}>{ok ? <Check /> : <X />}</div><div><strong>{label}</strong><span>{detail}</span></div><StatusBadge status={ok ? "ready" : "issue"} /></div>;
 }
 
-function ActivityRow({ item, storeName }: { item: ActivityItem; storeName?: string }) {
-  return <div className="activity-row"><div className={`activity-icon ${item.status}`}>{statusIcon(item.status)}</div><div className="activity-copy"><strong>{item.task_name || `Task ${item.task_gid}`}</strong><span>{storeName ?? (item.store_slug ? titleCase(item.store_slug) : "Unknown store")} · {item.automation_runs.dry_run ? "Dry run" : item.action_taken}</span></div><div className="activity-meta"><StatusBadge status={item.status} /><time>{relativeTime(item.started_at)}</time></div></div>;
+function ActivityRow({ item, storeLabel }: { item: ActivityItem; storeLabel: string }) {
+  return <div className="activity-row"><div className={`activity-icon ${item.status}`}>{statusIcon(item.status)}</div><div className="activity-copy"><TaskLink taskGid={item.task_gid} taskName={item.task_name || `Task ${item.task_gid}`} /><span>{activitySubline(item, storeLabel)}</span></div><div className="activity-meta"><StatusBadge status={item.status} /><time>{relativeTime(item.started_at)}</time></div></div>;
 }
 
 function StatusBadge({ status }: { status: string }) {
@@ -965,6 +966,51 @@ function titleCase(value: string) {
 function storeLabel(store: Pick<Store, "display_name" | "store_slug">) {
   const name = store.display_name?.trim();
   return name || titleCase(store.store_slug);
+}
+
+function asanaTaskUrl(taskGid: string) {
+  return `https://app.asana.com/0/0/${taskGid}`;
+}
+
+function activityStoreLabel(
+  item: Pick<ActivityItem, "store_slug">,
+  storeNames: Map<string, string>,
+) {
+  if (!item.store_slug) return "Store pending";
+  return storeNames.get(item.store_slug) ?? titleCase(item.store_slug);
+}
+
+function activitySubline(item: ActivityItem, storeLabelText: string) {
+  if (item.automation_runs.dry_run) return `${storeLabelText} · Dry run`;
+  if (item.action_taken !== "none") return `${storeLabelText} · Asana: ${item.action_taken}`;
+  return `${storeLabelText} · ${statusShortLabel(item.status)}`;
+}
+
+function statusShortLabel(status: Status) {
+  return status.replace(/^skipped_/, "").replaceAll("_", " ");
+}
+
+function TaskLink({
+  taskGid,
+  taskName,
+  className = "",
+}: {
+  taskGid: string;
+  taskName: string;
+  className?: string;
+}) {
+  return (
+    <a
+      className={`task-link ${className}`.trim()}
+      href={asanaTaskUrl(taskGid)}
+      target="_blank"
+      rel="noopener noreferrer"
+      onClick={(event) => event.stopPropagation()}
+    >
+      <span>{taskName}</span>
+      <ExternalLink aria-hidden="true" />
+    </a>
+  );
 }
 
 function parseShopifyAdminSlug(value: string) {

@@ -18,6 +18,8 @@ const TASK_FIELDS = [
   "due_at",
   "assignee.gid",
   "assignee.name",
+  "projects.gid",
+  "projects.name",
   "parent.gid",
   "parent.name",
   "created_by.gid",
@@ -362,6 +364,17 @@ export function parseShopifyEditorUrl(
     sectionHint: url.searchParams.get("section") ?? undefined,
     blockHint: url.searchParams.get("block") ?? undefined,
   };
+}
+
+export function extractStoreSlugFromText(text: string): string | null {
+  const fromEditor = parseShopifyEditorUrl(text)?.storeSlug;
+  if (fromEditor) return fromEditor;
+
+  const normalized = text.replaceAll("&amp;", "&");
+  const match = normalized.match(
+    /admin\.shopify\.com\/store\/([a-z0-9-]+)/i,
+  );
+  return match ? match[1].toLowerCase() : null;
 }
 
 function escapeHtml(value: string): string {

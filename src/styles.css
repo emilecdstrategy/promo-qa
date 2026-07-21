@@ -224,6 +224,19 @@ td:last-child, th:last-child { text-align: right; }
 .store-cell span, .task-cell span { color: var(--muted); font-size: 12px; line-height: 1.2; }
 .task-cell { align-items: flex-start; flex-direction: column; }
 .task-cell span { margin-top: 2px; }
+.task-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.2;
+  text-decoration: none;
+}
+.task-link:hover { color: var(--accent-bright); text-decoration: underline; }
+.task-link svg { width: 13px; height: 13px; opacity: 0.7; flex-shrink: 0; }
+.drawer-header .task-link { font-size: 22px; line-height: 1.15; }
 .store-avatar {
   width: 34px; height: 34px; display: grid; flex: 0 0 auto; place-items: center;
   overflow: hidden; border: 1px solid var(--border); border-radius: 9px; background: var(--surface-3);

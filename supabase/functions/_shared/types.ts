@@ -25,6 +25,7 @@ export interface AsanaTask {
   due_on?: string | null;
   due_at?: string | null;
   assignee?: { gid: string; name?: string } | null;
+  projects?: Array<{ gid: string; name?: string }>;
   parent?: { gid: string; name?: string } | null;
   created_by?: { gid: string; name: string } | null;
 }

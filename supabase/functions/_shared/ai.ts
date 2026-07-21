@@ -166,6 +166,42 @@ Rules:
     validateDesignReadiness(assessment);
     return assessment;
   }
+
+  async inferStoreSlug(input: {
+    taskName: string;
+    parentName?: string;
+    taskNotes: string;
+    parentNotes?: string;
+    projectNames: string[];
+    stores: Array<{
+      store_slug: string;
+      display_name: string | null;
+      shop_domain: string;
+    }>;
+  }): Promise<{ store_slug: string | null; confidence: number; reason: string }> {
+    const result = await this.jsonMessage<{
+      store_slug: string | null;
+      confidence: number;
+      reason: string;
+    }>(
+      `You identify which registered Shopify store a promo QA Asana task belongs to.
+Return JSON only:
+{"store_slug":"string|null","confidence":0.0,"reason":"string"}
+Rules:
+- Choose only from the provided stores list using the exact store_slug value.
+- Use task title, parent title, notes, and project names as evidence.
+- Brand or client names in titles often map to one store (for example "Power Planter" -> power-planter-augers).
+- Return null with low confidence when the store is ambiguous or not in the list.
+- confidence is 0..1.`,
+      input,
+      800,
+    );
+
+    if (typeof result.confidence !== "number") {
+      throw new Error("Claude store inference omitted confidence");
+    }
+    return result;
+  }
 }
 
 function parseJsonResponse<T>(text: string): T {

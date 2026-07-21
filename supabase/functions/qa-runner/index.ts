@@ -18,6 +18,10 @@ import {
   formatFailureComment,
   matchExpectedBanners,
 } from "../_shared/verify.ts";
+import {
+  type RegisteredStore,
+  resolveStoreSlug,
+} from "../_shared/store-resolve.ts";
 
 const ASANA_WORKSPACE_GID = Deno.env.get("ASANA_WORKSPACE_GID") ??
   "1201007545370748";
@@ -53,6 +57,8 @@ const MISSING_LINK_COMMENT =
 const MISSING_LINK_COMMENT_FINGERPRINT =
   "promo scheduler link in the task notes yet";
 
+let registeredStoresCache: RegisteredStore[] | null = null;
+
 interface RunRequest {
   taskGid?: string;
   dryRun?: boolean;
@@ -83,6 +89,7 @@ Deno.serve(async (request) => {
 
   let automationRunId: string | null = null;
   const requestStartedAt = Date.now();
+  registeredStoresCache = null;
   try {
     const input = await request.json().catch(() => ({})) as RunRequest;
     const triggerHeader = request.headers.get("x-qa-trigger") ?? "manual";
@@ -187,16 +194,18 @@ async function processTask(
   input: RunRequest,
 ): Promise<RunResult> {
   const context = await asana.getTaskContext(task.gid);
+  const stores = await listRegisteredStores();
+  const storeResolution = await resolveStoreSlug(context, stores, anthropic);
   const resultMeta = {
     taskGid: task.gid,
     taskName: context.task.name,
     parentTaskGid: context.parent?.gid ?? context.task.parent?.gid,
-    storeSlug: context.editorTarget?.storeSlug,
+    storeSlug: context.editorTarget?.storeSlug ?? storeResolution.store_slug ?? undefined,
     themeId: context.editorTarget?.themeId,
   };
 
   if (!context.editorTarget) {
-    return handleMissingEditorUrl(context, input, resultMeta);
+    return handleMissingEditorUrl(context, input, resultMeta, storeResolution);
   }
 
   const store = await getStore(context.editorTarget.storeSlug);
@@ -349,6 +358,7 @@ async function handleMissingEditorUrl(
     RunResult,
     "taskGid" | "taskName" | "parentTaskGid" | "storeSlug" | "themeId"
   >,
+  storeResolution: Awaited<ReturnType<typeof resolveStoreSlug>>,
 ): Promise<RunResult> {
   const waitingMessage =
     "Waiting for a Shopify theme editor / promo scheduler link in the task notes.";
@@ -359,7 +369,7 @@ async function handleMissingEditorUrl(
       ...resultMeta,
       status: "skipped_not_ready",
       action: "none",
-      details: waitingMessage,
+      details: { reason: waitingMessage, storeResolution },
     };
   }
 
@@ -384,6 +394,7 @@ async function handleMissingEditorUrl(
         reason: "Promo design still appears in progress on the parent task.",
         waitingFor: "design",
         designAssessment,
+        storeResolution,
       },
     };
   }
@@ -419,9 +430,26 @@ async function handleMissingEditorUrl(
       reason: waitingMessage,
       dueSoon: true,
       designAssessment,
+      storeResolution,
       notifiedCreator: shouldComment,
     },
   };
+}
+
+async function listRegisteredStores(): Promise<RegisteredStore[]> {
+  if (registeredStoresCache) return registeredStoresCache;
+  const { data, error } = await supabase.rpc("list_promo_qa_stores");
+  if (error) throw error;
+  registeredStoresCache = (data ?? []).map((store: {
+    store_slug: string;
+    shop_domain: string;
+    display_name?: string | null;
+  }) => ({
+    store_slug: store.store_slug,
+    shop_domain: store.shop_domain,
+    display_name: store.display_name ?? null,
+  }));
+  return registeredStoresCache;
 }
 
 async function missingLinkReminderAlreadySent(taskGid: string): Promise<boolean> {
