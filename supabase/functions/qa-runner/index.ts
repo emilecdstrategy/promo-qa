@@ -85,11 +85,14 @@ Deno.serve(async (request) => {
   const requestStartedAt = Date.now();
   try {
     const input = await request.json().catch(() => ({})) as RunRequest;
-    const trigger = request.headers.get("x-qa-trigger") === "cron"
+    const triggerHeader = request.headers.get("x-qa-trigger") ?? "manual";
+    const trigger = triggerHeader === "cron"
       ? "cron"
+      : triggerHeader === "webhook"
+      ? "webhook"
       : "manual";
 
-    if (trigger === "cron" && !await isAutomationEnabled()) {
+    if ((trigger === "cron" || trigger === "webhook") && !await isAutomationEnabled()) {
       automationRunId = await createAutomationRun({
         trigger,
         dryRun: false,
@@ -492,7 +495,7 @@ async function recordRun(input: {
 }
 
 async function createAutomationRun(input: {
-  trigger: "cron" | "manual";
+  trigger: "cron" | "manual" | "webhook";
   dryRun: boolean;
   taskGid?: string;
   requestedBy: string;

@@ -16,6 +16,8 @@ const TASK_FIELDS = [
   "modified_at",
   "due_on",
   "due_at",
+  "assignee.gid",
+  "assignee.name",
   "parent.gid",
   "parent.name",
   "created_by.gid",
@@ -235,6 +237,66 @@ export class AsanaClient {
     return { parentTask: parent, subtasks, comments };
   }
 
+  async listPromoQaSubtasksForParent(
+    parentGid: string,
+    assigneeGid: string,
+  ): Promise<AsanaTask[]> {
+    const query = new URLSearchParams({
+      opt_fields: TASK_FIELDS,
+      limit: "100",
+    });
+    const subtasks = (await this.request<AsanaTask[]>(
+      `/tasks/${parentGid}/subtasks?${query}`,
+    )).data;
+
+    return subtasks.filter((task) =>
+      !task.completed &&
+      isPromoQaTask(task) &&
+      task.assignee?.gid === assigneeGid
+    );
+  }
+
+  async createWorkspaceWebhook(
+    workspaceGid: string,
+    targetUrl: string,
+  ): Promise<{ gid: string; secret: string | null; active: boolean }> {
+    const response = await fetch(`${ASANA_API}/webhooks`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${this.accessToken}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        data: {
+          resource: workspaceGid,
+          target: targetUrl,
+          filters: [
+            { resource_type: "task", action: "changed" },
+            { resource_type: "task", action: "added" },
+            { resource_type: "story", action: "added" },
+          ],
+        },
+      }),
+    });
+    const payload = await response.json().catch(() => null) as
+      | AsanaEnvelope<{ gid: string; active: boolean }>
+      | null;
+    if (!response.ok || !payload) {
+      throw new AsanaApiError(
+        payload?.errors?.[0]?.message ??
+          `Asana webhook create failed (${response.status})`,
+        response.status,
+        payload,
+      );
+    }
+
+    return {
+      gid: payload.data.gid,
+      secret: response.headers.get("X-Hook-Secret"),
+      active: payload.data.active,
+    };
+  }
+
   async getTaskContext(taskGid: string): Promise<TaskContext> {
     const task = await this.getTask(taskGid);
     const parent = task.parent?.gid
@@ -331,4 +393,39 @@ export function stripHtml(value: string): string {
   text = text.replace(/&#39;/g, String.fromCharCode(39));
   text = text.replace(/\n{3,}/g, "\n\n");
   return text.trim();
+}
+
+export async function verifyAsanaWebhookSignature(
+  secret: string,
+  body: string,
+  signature: string | null,
+): Promise<boolean> {
+  if (!secret || !signature) return false;
+
+  const key = await crypto.subtle.importKey(
+    "raw",
+    new TextEncoder().encode(secret),
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["sign"],
+  );
+  const digest = await crypto.subtle.sign(
+    "HMAC",
+    key,
+    new TextEncoder().encode(body),
+  );
+  const expected = Array.from(new Uint8Array(digest))
+    .map((byte) => byte.toString(16).padStart(2, "0"))
+    .join("");
+
+  return timingSafeEqualHex(expected, signature.trim().toLowerCase());
+}
+
+function timingSafeEqualHex(left: string, right: string): boolean {
+  if (left.length !== right.length) return false;
+  let difference = 0;
+  for (let index = 0; index < left.length; index++) {
+    difference |= left.charCodeAt(index) ^ right.charCodeAt(index);
+  }
+  return difference === 0;
 }

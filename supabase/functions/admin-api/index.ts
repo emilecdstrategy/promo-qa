@@ -1,4 +1,5 @@
 import { createClient } from "npm:@supabase/supabase-js@2";
+import { invokeQaRunner } from "../_shared/runner.ts";
 
 const requiredEnv = (name: string): string => {
   const value = Deno.env.get(name);
@@ -144,13 +145,15 @@ async function setAutomationSettings(raw: unknown) {
 
 async function getOverview() {
   const since = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
-  const [stores, latestResult, recentResult, automation] = await Promise.all([
-    listStores(),
-    supabase.from("automation_runs").select("*")
-      .order("started_at", { ascending: false }).limit(1).maybeSingle(),
-    supabase.from("automation_run_items").select("status").gte("started_at", since),
-    getAutomationSettings(),
-  ]);
+  const [stores, latestResult, recentResult, automation, webhookConfigured] =
+    await Promise.all([
+      listStores(),
+      supabase.from("automation_runs").select("*")
+        .order("started_at", { ascending: false }).limit(1).maybeSingle(),
+      supabase.from("automation_run_items").select("status").gte("started_at", since),
+      getAutomationSettings(),
+      getWebhookConfigured(),
+    ]);
   if (latestResult.error) throw latestResult.error;
   if (recentResult.error) throw recentResult.error;
   const recent = recentResult.data ?? [];
@@ -164,7 +167,7 @@ async function getOverview() {
         .length,
     },
     lastRun: latest,
-    nextRunAt: nextTwentyMinuteBoundary(),
+    nextRunAt: nextFourHourBoundary(),
     recent: {
       total: recent.length,
       passed: recent.filter((item) => item.status === "passed").length,
@@ -174,11 +177,24 @@ async function getOverview() {
     },
     configuration: {
       scheduler: automation.enabled,
+      webhook: webhookConfigured,
       smtp: true,
       asana: Boolean(Deno.env.get("ASANA_ACCESS_TOKEN")),
       anthropic: Boolean(Deno.env.get("ANTHROPIC_API_KEY")),
     },
   };
+}
+
+async function getWebhookConfigured(): Promise<boolean> {
+  if (Deno.env.get("ASANA_WEBHOOK_SECRET")) return true;
+  const { data, error } = await supabase
+    .from("promo_qa_settings")
+    .select("value")
+    .eq("key", "asana_webhook_secret")
+    .maybeSingle();
+  if (error) throw error;
+  const secret = data?.value?.secret;
+  return typeof secret === "string" && secret.length > 0;
 }
 
 async function listActivity(params: URLSearchParams) {
@@ -220,19 +236,15 @@ async function invokeRunner(raw: unknown, request: Request) {
     throw new Error("Live runs require explicit confirmation");
   }
 
-  const response = await fetch(`${supabaseUrl}/functions/v1/qa-runner`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "x-qa-runner-secret": runnerSecret,
-      "x-qa-trigger": "manual",
-      "x-qa-requested-by": request.headers.get("x-admin-user") ?? "dashboard",
-    },
-    body: JSON.stringify({ taskGid, dryRun, force: true }),
+  return invokeQaRunner({
+    supabaseUrl,
+    runnerSecret,
+    trigger: "manual",
+    requestedBy: request.headers.get("x-admin-user") ?? "dashboard",
+    taskGid,
+    dryRun,
+    force: true,
   });
-  const result = await response.json();
-  if (!response.ok) throw new Error(result.error ?? "QA runner failed");
-  return result;
 }
 
 function validateCreateStoreBody(raw: unknown) {
@@ -286,10 +298,18 @@ function parseTaskGid(value: string): string | null {
   return matches.at(-1)?.[1] ?? null;
 }
 
-function nextTwentyMinuteBoundary(): string {
+function nextFourHourBoundary(): string {
   const next = new Date();
   next.setUTCSeconds(0, 0);
-  next.setUTCMinutes(Math.ceil((next.getUTCMinutes() + 0.01) / 20) * 20);
+  next.setUTCMinutes(0);
+  const hour = next.getUTCHours();
+  const nextHour = Math.ceil((hour + 0.01) / 4) * 4;
+  if (nextHour >= 24) {
+    next.setUTCDate(next.getUTCDate() + 1);
+    next.setUTCHours(0);
+  } else {
+    next.setUTCHours(nextHour);
+  }
   return next.toISOString();
 }
 

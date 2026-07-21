@@ -64,19 +64,32 @@ supabase secrets set `
   ALERT_EMAIL_TO="your@email.com"
 ```
 
-## 4. Deploy the function
+## 4. Deploy functions
 
 ```powershell
-supabase functions deploy qa-runner
+supabase functions deploy asana-webhook qa-runner admin-api --project-ref bcmwdpvsmxuzsqrcooos
 ```
 
-## 5. Register Power Planter store credentials
+## 5. Register the Asana webhook
+
+After `asana-webhook` is deployed:
+
+```powershell
+npm run webhook:register
+```
+
+This creates a workspace webhook pointing at
+`https://bcmwdpvsmxuzsqrcooos.supabase.co/functions/v1/asana-webhook`,
+stores the hook secret in `promo_qa_settings`, and starts event-driven QA
+when tasks or comments change. A 4-hour cron safety net still runs a full sweep.
+
+## 6. Register Power Planter store credentials
 
 ```powershell
 npm run store:seed -- power-planter-augers power-planter-augers.myshopify.com
 ```
 
-## 6. Enable cron
+## 7. Enable cron safety net
 
 In Supabase SQL Editor, run:
 
@@ -92,7 +105,7 @@ select vault.create_secret(
 );
 ```
 
-## 7. Dry-run before live writes
+## 8. Dry-run before live writes
 
 ```powershell
 npm run qa:local -- 1215994997303258

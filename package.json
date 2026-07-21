@@ -8,7 +8,8 @@
     "typecheck": "tsc --noEmit",
     "test": "node --experimental-strip-types --test tests/*.test.mjs",
     "qa:local": "node --env-file=.env.local scripts/local-run.mjs",
-    "store:seed": "node --env-file=.env.local scripts/seed-store.mjs"
+    "store:seed": "node --env-file=.env.local scripts/seed-store.mjs",
+    "webhook:register": "node --env-file=.env.local scripts/register-asana-webhook.mjs"
   },
   "engines": {
     "node": ">=20"

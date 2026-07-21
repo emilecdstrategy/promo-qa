@@ -20,7 +20,7 @@ export interface Store {
 
 export interface AutomationRun {
   id: string;
-  trigger: "cron" | "manual";
+  trigger: "cron" | "manual" | "webhook";
   dry_run: boolean;
   requested_task_gid: string | null;
   requested_by: string | null;
@@ -73,6 +73,7 @@ export interface OverviewData {
   };
   configuration: {
     scheduler: boolean;
+    webhook: boolean;
     smtp: boolean;
     asana: boolean;
     anthropic: boolean;

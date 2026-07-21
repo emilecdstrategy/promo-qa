@@ -30,6 +30,7 @@ import {
 import { api, ApiError, patch, post } from "./api";
 import type {
   ActivityItem,
+  AutomationRun,
   OverviewData,
   RunResponse,
   Status,
@@ -109,7 +110,7 @@ export default function App() {
             <span className={automationEnabled ? "live-dot" : "paused-dot"} />
             <div>
               <strong>{automationEnabled ? "Automation live" : "Automation paused"}</strong>
-              <span>{automationEnabled ? "Runs every 20 minutes" : "Scheduled checks are off"}</span>
+              <span>{automationEnabled ? "Runs when Asana tasks change" : "Scheduled checks are off"}</span>
             </div>
           </div>
           <button
@@ -276,7 +277,7 @@ function Overview({
             {!automationEnabled
               ? "Turn automation back on when you want scheduled checks to resume."
               : healthy
-              ? `Next scheduled check ${relativeTime(data.nextRunAt)}`
+              ? `Runs on Asana changes · Safety net ${relativeTime(data.nextRunAt)}`
               : "Review the configuration and latest activity below."}
           </span>
         </div>
@@ -299,8 +300,13 @@ function Overview({
           <PanelHeader title="System status" subtitle="Live configuration checks" />
           <div className="config-list">
             <ConfigRow
-              label="Scheduler"
-              detail={automationEnabled ? "Every 20 minutes" : "Paused"}
+              label="Asana webhooks"
+              detail={data.configuration.webhook ? "Task change listener active" : "Register webhook to enable"}
+              ok={data.configuration.webhook}
+            />
+            <ConfigRow
+              label="Safety net"
+              detail={automationEnabled ? "Full sweep every 4 hours" : "Paused"}
               ok={automationEnabled}
             />
             <ConfigRow label="Asana connection" detail="Task access ready" ok={data.configuration.asana} />
@@ -571,7 +577,8 @@ function ActivityLog() {
           onChange={setTrigger}
           options={[
             { value: "", label: "All triggers" },
-            { value: "cron", label: "Scheduled" },
+            { value: "webhook", label: "Asana change" },
+            { value: "cron", label: "Safety net" },
             { value: "manual", label: "Manual" },
           ]}
         />
@@ -586,7 +593,7 @@ function ActivityLog() {
                   <td><StatusBadge status={item.status} /></td>
                   <td><div className="task-cell"><strong>{item.task_name || `Task ${item.task_gid}`}</strong><span>{item.action_taken === "none" ? "No Asana action" : `Asana: ${item.action_taken}`}</span></div></td>
                   <td>{item.store_slug ? storeNames.get(item.store_slug) ?? titleCase(item.store_slug) : "—"}</td>
-                  <td><span className="trigger-badge">{item.automation_runs.trigger === "cron" ? <Clock3 /> : <Play />}{item.automation_runs.dry_run ? "Dry run" : item.automation_runs.trigger === "cron" ? "Scheduled" : "Manual live"}</span></td>
+                  <td><span className="trigger-badge">{triggerIcon(item.automation_runs.trigger)}{triggerLabel(item.automation_runs)}</span></td>
                   <td>{item.confidence == null ? "—" : `${Math.round(item.confidence * 100)}%`}</td>
                   <td className="muted">{relativeTime(item.started_at)}</td>
                   <td><ChevronRight className="row-chevron" /></td>
@@ -839,6 +846,19 @@ function storeFaviconSecondaryUrl(domain: string) {
   return `https://t1.gstatic.com/faviconV2?client=SOCIAL&type=FAVICON&fallback_opts=TYPE,SIZE,URL&url=${siteUrl}&size=64`;
 }
 
+function triggerIcon(trigger: AutomationRun["trigger"]) {
+  if (trigger === "webhook") return <Zap />;
+  if (trigger === "cron") return <Clock3 />;
+  return <Play />;
+}
+
+function triggerLabel(run: Pick<AutomationRun, "trigger" | "dry_run">) {
+  if (run.dry_run) return "Dry run";
+  if (run.trigger === "webhook") return "Asana change";
+  if (run.trigger === "cron") return "Safety net";
+  return "Manual live";
+}
+
 function NavItem({ icon, label, active, onClick }: { icon: ReactNode; label: string; active: boolean; onClick: () => void }) {
   return <button className={`nav-item ${active ? "active" : ""}`} onClick={onClick}>{icon}<span>{label}</span>{active && <span className="nav-indicator" />}</button>;
 }
@@ -859,7 +879,7 @@ function TopbarAutomationToggle({
       </div>
       <div className="topbar-automation-copy">
         <strong>Automatic QA</strong>
-        <span>{enabled ? "Runs every 20 minutes" : "Scheduled checks paused"}</span>
+        <span>{enabled ? "Runs when Asana tasks change" : "Scheduled checks paused"}</span>
       </div>
       <label className="automation-switch">
         <span className="topbar-automation-label">{enabled ? "On" : "Off"}</span>

@@ -24,6 +24,7 @@ export interface AsanaTask {
   modified_at?: string;
   due_on?: string | null;
   due_at?: string | null;
+  assignee?: { gid: string; name?: string } | null;
   parent?: { gid: string; name?: string } | null;
   created_by?: { gid: string; name: string } | null;
 }
@@ -58,6 +59,18 @@ export interface DesignReadinessAssessment {
   confidence: number;
   summary: string;
   signals: string[];
+}
+
+export interface AsanaWebhookEvent {
+  user?: { gid: string; name?: string };
+  resource: { gid: string; resource_type: string; name?: string };
+  action: string;
+  parent?: { gid: string; resource_type: string; name?: string } | null;
+  change?: { field?: string; action?: string; new_value?: unknown };
+}
+
+export interface AsanaWebhookPayload {
+  events?: AsanaWebhookEvent[];
 }
 
 export interface ExpectedBanner {
