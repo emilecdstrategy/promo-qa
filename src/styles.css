@@ -188,6 +188,12 @@ button:focus-visible, input:focus-visible, select:focus-visible, a:focus-visible
 .activity-copy { min-width: 0; display: flex; flex: 1; flex-direction: column; }
 .activity-copy strong { overflow: hidden; font-size: 13px; text-overflow: ellipsis; white-space: nowrap; color: var(--text); }
 .activity-copy span { margin-top: 3px; color: var(--muted); font-size: 12px; }
+.activity-subline, .activity-store-label {
+  display: inline-flex; align-items: center; gap: 6px; min-width: 0;
+}
+.activity-subline { margin-top: 3px; color: var(--muted); font-size: 12px; }
+.activity-subline-sep { flex: 0 0 auto; }
+.activity-store-label span:last-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .activity-meta { display: flex; align-items: flex-end; flex-direction: column; gap: 5px; }
 .activity-meta time { color: var(--muted); font-size: 12px; }
 .config-list { padding: 7px 20px; }
@@ -241,6 +247,10 @@ td:last-child, th:last-child { text-align: right; }
   width: 34px; height: 34px; display: grid; flex: 0 0 auto; place-items: center;
   overflow: hidden; border: 1px solid var(--border); border-radius: 9px; background: var(--surface-3);
 }
+.store-avatar-sm {
+  width: 16px; height: 16px; border-radius: 4px;
+}
+.store-avatar-sm svg { width: 10px; height: 10px; }
 .store-avatar-image img { width: 100%; height: 100%; object-fit: cover; display: block; }
 .store-avatar-fallback { color: var(--accent-bright); background: var(--accent-soft); border-color: rgba(155, 140, 255, .22); }
 .sr-only {

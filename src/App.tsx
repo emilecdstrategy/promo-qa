@@ -227,6 +227,7 @@ function Overview({
   const [data, setData] = useState<OverviewData | null>(null);
   const [activity, setActivity] = useState<ActivityItem[]>([]);
   const [storeNames, setStoreNames] = useState<Map<string, string>>(new Map());
+  const [storeDomains, setStoreDomains] = useState<Map<string, string>>(new Map());
   const [error, setError] = useState("");
 
   const load = useCallback(async () => {
@@ -240,6 +241,7 @@ function Overview({
       setData(overview);
       setActivity(recent.items);
       setStoreNames(new Map(storeResult.stores.map((store) => [store.store_slug, storeLabel(store)])));
+      setStoreDomains(storeDomainsFromStores(storeResult.stores));
       onAutomationSync(overview.automation.enabled);
     } catch (err) {
       setError(errorText(err));
@@ -294,7 +296,7 @@ function Overview({
         <section className="panel activity-panel">
           <PanelHeader title="Recent activity" subtitle="Latest task-level results" action={<button className="text-button" onClick={() => onNavigate("activity")}>View all <ChevronRight /></button>} />
           {activity.length
-            ? <div className="activity-list">{activity.map((item) => <ActivityRow key={item.id} item={item} storeLabel={activityStoreLabel(item, storeNames)} />)}</div>
+            ? <div className="activity-list">{activity.map((item) => <ActivityRow key={item.id} item={item} storeNames={storeNames} storeDomains={storeDomains} />)}</div>
             : <EmptyState icon={<Activity />} title="No activity yet" text="The first scheduled or manual run will appear here." />}
         </section>
         <section className="panel">
@@ -523,6 +525,7 @@ function ActivityLog() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const storeNames = new Map(stores.map((item) => [item.store_slug, storeLabel(item)]));
+  const storeDomains = storeDomainsFromStores(stores);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -592,8 +595,8 @@ function ActivityLog() {
               <tbody>{items.map((item) => (
                 <tr key={item.id} className="clickable-row" onClick={() => setSelected(item)}>
                   <td><StatusBadge status={item.status} /></td>
-                  <td><div className="task-cell"><TaskLink taskGid={item.task_gid} taskName={item.task_name || `Task ${item.task_gid}`} /><span>{activitySubline(item, activityStoreLabel(item, storeNames))}</span></div></td>
-                  <td>{activityStoreLabel(item, storeNames)}</td>
+                  <td><div className="task-cell"><TaskLink taskGid={item.task_gid} taskName={item.task_name || `Task ${item.task_gid}`} /><ActivitySubline item={item} storeNames={storeNames} storeDomains={storeDomains} /></div></td>
+                  <td><ActivityStoreLabel item={item} storeNames={storeNames} storeDomains={storeDomains} /></td>
                   <td><span className="trigger-badge">{triggerIcon(item.automation_runs.trigger)}{triggerLabel(item.automation_runs)}</span></td>
                   <td>{item.confidence == null ? "—" : `${Math.round(item.confidence * 100)}%`}</td>
                   <td className="muted">{relativeTime(item.started_at)}</td>
@@ -805,14 +808,23 @@ function SelectField({
   );
 }
 
-function StoreFavicon({ domain, label }: { domain: string; label: string }) {
+function StoreFavicon({
+  domain,
+  label,
+  compact = false,
+}: {
+  domain: string;
+  label: string;
+  compact?: boolean;
+}) {
   const [source, setSource] = useState<"duckduckgo" | "google" | "failed">("duckduckgo");
   const normalized = domain.trim().toLowerCase();
+  const avatarClass = compact ? "store-avatar store-avatar-sm" : "store-avatar";
 
   if (source === "failed") {
     return (
-      <div className="store-avatar store-avatar-fallback" aria-hidden="true">
-        <StoreIcon size={16} />
+      <div className={`${avatarClass} store-avatar-fallback`} aria-hidden="true">
+        <StoreIcon size={compact ? 10 : 16} />
       </div>
     );
   }
@@ -822,7 +834,7 @@ function StoreFavicon({ domain, label }: { domain: string; label: string }) {
     : storeFaviconSecondaryUrl(normalized);
 
   return (
-    <div className="store-avatar store-avatar-image">
+    <div className={`${avatarClass} store-avatar-image`}>
       <img
         src={src}
         alt=""
@@ -911,8 +923,72 @@ function ConfigRow({ label, detail, ok }: { label: string; detail: string; ok: b
   return <div className="config-row"><div className={`config-icon ${ok ? "ok" : ""}`}>{ok ? <Check /> : <X />}</div><div><strong>{label}</strong><span>{detail}</span></div><StatusBadge status={ok ? "ready" : "issue"} /></div>;
 }
 
-function ActivityRow({ item, storeLabel }: { item: ActivityItem; storeLabel: string }) {
-  return <div className="activity-row"><div className={`activity-icon ${item.status}`}>{statusIcon(item.status)}</div><div className="activity-copy"><TaskLink taskGid={item.task_gid} taskName={item.task_name || `Task ${item.task_gid}`} /><span>{activitySubline(item, storeLabel)}</span></div><div className="activity-meta"><StatusBadge status={item.status} /><time>{relativeTime(item.started_at)}</time></div></div>;
+function ActivityRow({
+  item,
+  storeNames,
+  storeDomains,
+}: {
+  item: ActivityItem;
+  storeNames: Map<string, string>;
+  storeDomains: Map<string, string>;
+}) {
+  return (
+    <div className="activity-row">
+      <div className={`activity-icon ${item.status}`}>{statusIcon(item.status)}</div>
+      <div className="activity-copy">
+        <TaskLink taskGid={item.task_gid} taskName={item.task_name || `Task ${item.task_gid}`} />
+        <ActivitySubline item={item} storeNames={storeNames} storeDomains={storeDomains} />
+      </div>
+      <div className="activity-meta">
+        <StatusBadge status={item.status} />
+        <time>{relativeTime(item.started_at)}</time>
+      </div>
+    </div>
+  );
+}
+
+function ActivityStoreLabel({
+  item,
+  storeNames,
+  storeDomains,
+}: {
+  item: Pick<ActivityItem, "store_slug">;
+  storeNames: Map<string, string>;
+  storeDomains: Map<string, string>;
+}) {
+  const label = activityStoreLabel(item, storeNames);
+  const domain = resolveStoreDomain(item.store_slug, storeDomains);
+
+  return (
+    <span className="activity-store-label">
+      {domain && <StoreFavicon domain={domain} label={label} compact />}
+      <span>{label}</span>
+    </span>
+  );
+}
+
+function ActivitySubline({
+  item,
+  storeNames,
+  storeDomains,
+}: {
+  item: ActivityItem;
+  storeNames: Map<string, string>;
+  storeDomains: Map<string, string>;
+}) {
+  const suffix = item.automation_runs.dry_run
+    ? "Dry run"
+    : item.action_taken !== "none"
+    ? `Asana: ${item.action_taken}`
+    : statusShortLabel(item.status);
+
+  return (
+    <span className="activity-subline">
+      <ActivityStoreLabel item={item} storeNames={storeNames} storeDomains={storeDomains} />
+      <span className="activity-subline-sep"> · </span>
+      <span>{suffix}</span>
+    </span>
+  );
 }
 
 function StatusBadge({ status }: { status: string }) {
@@ -980,10 +1056,16 @@ function activityStoreLabel(
   return storeNames.get(item.store_slug) ?? titleCase(item.store_slug);
 }
 
-function activitySubline(item: ActivityItem, storeLabelText: string) {
-  if (item.automation_runs.dry_run) return `${storeLabelText} · Dry run`;
-  if (item.action_taken !== "none") return `${storeLabelText} · Asana: ${item.action_taken}`;
-  return `${storeLabelText} · ${statusShortLabel(item.status)}`;
+function storeDomainsFromStores(stores: Store[]) {
+  return new Map(stores.map((store) => [store.store_slug, store.shop_domain]));
+}
+
+function resolveStoreDomain(
+  storeSlug: string | null | undefined,
+  storeDomains: Map<string, string>,
+) {
+  if (!storeSlug) return null;
+  return storeDomains.get(storeSlug) ?? `${storeSlug}.myshopify.com`;
 }
 
 function statusShortLabel(status: Status) {
