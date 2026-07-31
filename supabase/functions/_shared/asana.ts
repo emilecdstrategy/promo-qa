@@ -399,10 +399,64 @@ function buildAsanaCommentHtml(
   creator: { gid: string; name: string } | null,
   message: string,
 ): string {
-  const body = escapeAsanaCommentText(message.trim()).replaceAll("\n", "<br/>");
-  if (!creator) return `<body>${body}</body>`;
+  const chunks: string[] = [];
+  if (creator) {
+    chunks.push(
+      `<a data-asana-gid="${escapeHtml(creator.gid)}" data-asana-type="user"></a>`,
+    );
+  }
 
-  return `<body><a data-asana-gid="${escapeHtml(creator.gid)}" data-asana-type="user">@${escapeHtml(creator.name)}</a><br/>${body}</body>`;
+  const lines = message.trim().split("\n");
+  let intro = "";
+  const listItems: string[] = [];
+  let currentBanner: { title: string; issues: string[] } | null = null;
+
+  const flushBanner = () => {
+    if (!currentBanner) return;
+    let item =
+      `<li><strong>${escapeAsanaCommentText(currentBanner.title)}</strong>`;
+    if (currentBanner.issues.length) {
+      item += `<ul>${
+        currentBanner.issues.map((issue) =>
+          `<li>${escapeAsanaCommentText(issue)}</li>`
+        ).join("")
+      }</ul>`;
+    }
+    item += "</li>";
+    listItems.push(item);
+    currentBanner = null;
+  };
+
+  for (const rawLine of lines) {
+    const trimmed = rawLine.trim();
+    if (!trimmed) continue;
+
+    if (trimmed.startsWith("• ")) {
+      flushBanner();
+      currentBanner = { title: trimmed.slice(2), issues: [] };
+      continue;
+    }
+
+    if (trimmed.startsWith("- ") && currentBanner) {
+      currentBanner.issues.push(trimmed.slice(2));
+      continue;
+    }
+
+    if (trimmed.startsWith("Warning:")) {
+      flushBanner();
+      listItems.push(`<li>${escapeAsanaCommentText(trimmed)}</li>`);
+      continue;
+    }
+
+    if (!intro) intro = escapeAsanaCommentText(trimmed);
+  }
+
+  flushBanner();
+
+  if (intro) chunks.push(intro);
+  if (listItems.length) chunks.push(`<ul>${listItems.join("")}</ul>`);
+
+  return `<body>${chunks.join("")}</body>`;
 }
 
 function escapeHtml(value: string): string {
