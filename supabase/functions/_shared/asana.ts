@@ -166,13 +166,11 @@ export class AsanaClient {
       await new Promise((resolve) => setTimeout(resolve, 2000));
     }
 
-    const text = creator
-      ? `https://app.asana.com/0/${creator.gid} ${message.trim()}`
-      : message.trim();
+    const htmlText = buildAsanaCommentHtml(creator, message);
 
     await this.request(`/tasks/${taskGid}/stories`, {
       method: "POST",
-      body: JSON.stringify({ data: { text } }),
+      body: JSON.stringify({ data: { html_text: htmlText } }),
     });
   }
 
@@ -395,6 +393,31 @@ export function extractStoreSlugFromText(text: string): string | null {
     /admin\.shopify\.com\/store\/([a-z0-9-]+)/i,
   );
   return match ? match[1].toLowerCase() : null;
+}
+
+function buildAsanaCommentHtml(
+  creator: { gid: string; name: string } | null,
+  message: string,
+): string {
+  const body = escapeAsanaCommentText(message.trim()).replaceAll("\n", "<br/>");
+  if (!creator) return `<body>${body}</body>`;
+
+  return `<body><a data-asana-gid="${escapeHtml(creator.gid)}" data-asana-type="user">@${escapeHtml(creator.name)}</a><br/>${body}</body>`;
+}
+
+function escapeHtml(value: string): string {
+  return value
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;");
+}
+
+function escapeAsanaCommentText(value: string): string {
+  return value
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;");
 }
 
 export function stripHtml(value: string): string {

@@ -139,7 +139,6 @@ export function formatFailureComment(verdict: QaVerdict): string {
     if (!isActionableWarning(warning)) continue;
     lines.push(`Warning: ${warning}`);
   }
-  lines.push(`Confidence: ${Math.round(verdict.confidence * 100)}%`);
   return lines.join("\n").trim();
 }
 
@@ -147,7 +146,7 @@ function guardBanner(
   verdict: BannerVerdict,
   match: CandidateMatch | undefined,
 ): BannerVerdict {
-  const issues = [...new Set(verdict.issues ?? [])];
+  const issues: string[] = [];
   const block = match?.block;
   if (!match || !block) {
     issues.push("No matching banner block was found by promo link.");
@@ -179,11 +178,21 @@ function guardBanner(
   if (!expected.end_date) {
     issues.push("The Asana spec has no unambiguous end date.");
   } else if (normalizeDate(foundEnd) !== normalizeDate(expected.end_date)) {
-    issues.push(
-      `End date mismatch: expected ${expected.end_date}, found ${
-        foundEnd ?? "missing"
-      }.`,
-    );
+    const expectedDate = normalizeDate(expected.end_date);
+    const foundDate = normalizeDate(foundEnd);
+    let detail = `End date mismatch: expected ${expectedDate}, found ${
+      foundDate ?? "missing"
+    }`;
+    if (expectedDate && foundDate) {
+      const dayDiff = Math.round(
+        (new Date(`${foundDate}T00:00:00`).getTime() -
+          new Date(`${expectedDate}T00:00:00`).getTime()) / 86_400_000,
+      );
+      if (Math.abs(dayDiff) === 1) {
+        detail += " (off by 1 day)";
+      }
+    }
+    issues.push(`${detail}.`);
   }
   if (!expected.promo_link) {
     issues.push("The Asana spec has no unambiguous promo link.");
