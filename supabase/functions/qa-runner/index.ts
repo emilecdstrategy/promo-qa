@@ -56,6 +56,8 @@ const MISSING_LINK_COMMENT =
   "Hi! This promo QA task is due soon, but I do not see a Shopify theme editor / promo scheduler link in the task notes yet. Could you add it when the promo is ready to schedule?";
 const MISSING_LINK_COMMENT_FINGERPRINT =
   "promo scheduler link in the task notes yet";
+const FAILURE_COMMENT_FINGERPRINT =
+  "automated promo qa found configuration issues";
 
 let registeredStoresCache: RegisteredStore[] | null = null;
 
@@ -328,16 +330,25 @@ async function processTask(
       ...spec.ambiguities,
     );
   }
-  await asana.addQaComment(
-    task.gid,
-    context.creator,
-    formatFailureComment(verdict),
-  );
+
+  const shouldComment = !input.dryRun &&
+    (input.force || !await failureCommentAlreadySent(task.gid, verdict));
+  if (shouldComment) {
+    await asana.addQaComment(
+      task.gid,
+      context.creator,
+      formatFailureComment(verdict),
+    );
+  }
+
+  const refreshedTask = shouldComment
+    ? await asana.getTask(task.gid)
+    : context.task;
   await recordRun({
     context,
-    task: await asana.getTask(task.gid),
+    task: refreshedTask,
     status: "failed",
-    action: "commented",
+    action: shouldComment ? "commented" : "none",
     verdict: { spec, verdict, publishedThemeId },
     confidence: Math.min(spec.confidence, verdict.confidence),
   });
@@ -345,7 +356,7 @@ async function processTask(
     ...resultMeta,
     publishedThemeId,
     status: "failed",
-    action: "commented",
+    action: shouldComment ? "commented" : "none",
     confidence: Math.min(spec.confidence, verdict.confidence),
     details: verdict,
   };
@@ -403,9 +414,14 @@ async function handleMissingEditorUrl(
     (input.force ||
       !await missingLinkReminderAlreadySent(context.task.gid));
   if (shouldComment) {
+    await asana.addQaComment(
+      context.task.gid,
+      context.creator,
+      MISSING_LINK_COMMENT,
+    );
     await recordRun({
       context,
-      task: context.task,
+      task: await asana.getTask(context.task.gid),
       status: "skipped_not_ready",
       action: "commented",
       verdict: {
@@ -415,11 +431,6 @@ async function handleMissingEditorUrl(
         reminderSent: true,
       },
     });
-    await asana.addQaComment(
-      context.task.gid,
-      context.creator,
-      MISSING_LINK_COMMENT,
-    );
   }
 
   return {
@@ -464,6 +475,53 @@ async function missingLinkReminderAlreadySent(taskGid: string): Promise<boolean>
     .maybeSingle();
   if (error) throw error;
   return data?.status === "skipped_not_ready" && data.action_taken === "commented";
+}
+
+async function failureCommentAlreadySent(
+  taskGid: string,
+  verdict: Awaited<ReturnType<typeof applyDeterministicGuards>>,
+): Promise<boolean> {
+  if (await asana.hasCommentContaining(taskGid, FAILURE_COMMENT_FINGERPRINT)) {
+    return true;
+  }
+
+  const signature = failureSignature(verdict);
+  const { data, error } = await supabase
+    .from("qa_runs")
+    .select("status,action_taken,verdict_json")
+    .eq("asana_task_gid", taskGid)
+    .maybeSingle();
+  if (error) throw error;
+  if (data?.status !== "failed" || data.action_taken !== "commented") {
+    return false;
+  }
+
+  return failureSignatureFromStoredVerdict(data.verdict_json) === signature;
+}
+
+function failureSignature(
+  verdict: Awaited<ReturnType<typeof applyDeterministicGuards>>,
+): string {
+  return verdict.banners
+    .flatMap((banner) => banner.issues ?? [])
+    .map((issue) => issue.trim().toLowerCase())
+    .filter(Boolean)
+    .sort()
+    .join("|");
+}
+
+function failureSignatureFromStoredVerdict(verdictJson: unknown): string {
+  if (!verdictJson || typeof verdictJson !== "object") return "";
+
+  const verdict = (verdictJson as {
+    verdict?: { banners?: Array<{ issues?: string[] }> };
+  }).verdict;
+  return (verdict?.banners ?? [])
+    .flatMap((banner) => banner.issues ?? [])
+    .map((issue) => issue.trim().toLowerCase())
+    .filter(Boolean)
+    .sort()
+    .join("|");
 }
 
 async function isAutomationEnabled(): Promise<boolean> {

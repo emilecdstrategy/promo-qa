@@ -113,6 +113,23 @@ export class AsanaClient {
     return (await this.request<AsanaTask>(`/tasks/${taskGid}?${query}`)).data;
   }
 
+  async getCommentRecipient(
+    task: AsanaTask,
+    parent: AsanaTask | null,
+    automationAssigneeGid?: string,
+  ): Promise<{ gid: string; name: string } | null> {
+    const automationGid = automationAssigneeGid ?? null;
+
+    if (task.created_by?.gid && task.created_by.gid !== automationGid) {
+      return task.created_by;
+    }
+    if (parent?.created_by?.gid && parent.created_by.gid !== automationGid) {
+      return parent.created_by;
+    }
+    if (task.created_by?.gid) return task.created_by;
+    return await this.getCreator(task);
+  }
+
   async getCreator(
     task: AsanaTask,
   ): Promise<{ gid: string; name: string } | null> {
@@ -150,7 +167,7 @@ export class AsanaClient {
     }
 
     const text = creator
-      ? `https://app.asana.com/0/${creator.gid}/list\n\n${message.trim()}`
+      ? `https://app.asana.com/0/${creator.gid} ${message.trim()}`
       : message.trim();
 
     await this.request(`/tasks/${taskGid}/stories`, {
@@ -312,7 +329,11 @@ export class AsanaClient {
     return {
       task,
       parent,
-      creator: await this.getCreator(task),
+      creator: await this.getCommentRecipient(
+        task,
+        parent,
+        Deno.env.get("ASANA_ASSIGNEE_GID") ?? undefined,
+      ),
       editorTarget,
     };
   }
