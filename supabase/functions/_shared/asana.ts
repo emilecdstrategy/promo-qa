@@ -1,5 +1,6 @@
 import type {
   AsanaTask,
+  IncomingComment,
   PromoDesignComment,
   PromoDesignContext,
   PromoDesignSubtask,
@@ -156,7 +157,12 @@ export class AsanaClient {
     taskGid: string,
     creator: { gid: string; name: string } | null,
     message: string,
-  ): Promise<void> {
+    dedupNeedle?: string,
+  ): Promise<boolean> {
+    if (dedupNeedle && await this.hasCommentContaining(taskGid, dedupNeedle)) {
+      return false;
+    }
+
     if (creator) {
       await this.request(`/tasks/${taskGid}/addFollowers`, {
         method: "POST",
@@ -166,31 +172,115 @@ export class AsanaClient {
       await new Promise((resolve) => setTimeout(resolve, 2000));
     }
 
+    if (dedupNeedle && await this.hasCommentContaining(taskGid, dedupNeedle)) {
+      return false;
+    }
+
     const htmlText = buildAsanaCommentHtml(creator, message);
 
     await this.request(`/tasks/${taskGid}/stories`, {
       method: "POST",
       body: JSON.stringify({ data: { html_text: htmlText } }),
     });
+    return true;
   }
 
   async hasCommentContaining(taskGid: string, needle: string): Promise<boolean> {
+    return (await this.getLatestCommentContaining(taskGid, needle)) !== null;
+  }
+
+  async getLatestCommentContaining(
+    taskGid: string,
+    needle: string,
+  ): Promise<{ created_at: string; text: string } | null> {
     const normalizedNeedle = needle.trim().toLowerCase();
-    if (!normalizedNeedle) return false;
+    if (!normalizedNeedle) return null;
 
     const query = new URLSearchParams({
-      opt_fields: "type,text,html_text",
+      opt_fields: "type,text,html_text,created_at",
       limit: "100",
     });
     const stories = (await this.request<
-      Array<{ type?: string; text?: string; html_text?: string }>
+      Array<{
+        type?: string;
+        text?: string;
+        html_text?: string;
+        created_at?: string;
+      }>
     >(`/tasks/${taskGid}/stories?${query}`)).data;
 
-    return stories.some((story) => {
-      if (story.type !== "comment") return false;
-      const text = stripHtml(story.text ?? story.html_text ?? "").toLowerCase();
-      return text.includes(normalizedNeedle);
+    let latest: { created_at: string; text: string } | null = null;
+    for (const story of stories) {
+      if (story.type !== "comment" || !story.created_at) continue;
+      const text = stripHtml(story.text ?? story.html_text ?? "");
+      if (!text.toLowerCase().includes(normalizedNeedle)) continue;
+      if (
+        !latest ||
+        story.created_at.localeCompare(latest.created_at) > 0
+      ) {
+        latest = { created_at: story.created_at, text };
+      }
+    }
+    return latest;
+  }
+
+  async getStory(storyGid: string): Promise<IncomingComment | null> {
+    const query = new URLSearchParams({
+      opt_fields:
+        "gid,type,text,html_text,created_at,created_by.gid,created_by.name,target.gid",
     });
+    const story = (await this.request<{
+      gid: string;
+      type?: string;
+      text?: string;
+      html_text?: string;
+      created_at?: string;
+      created_by?: { gid?: string; name?: string };
+      target?: { gid?: string };
+    }>(`/stories/${storyGid}?${query}`)).data;
+    if (story.type !== "comment" || !story.created_at || !story.target?.gid) {
+      return null;
+    }
+    return {
+      gid: story.gid,
+      taskGid: story.target.gid,
+      text: stripHtml(story.text ?? story.html_text ?? ""),
+      htmlText: story.html_text,
+      createdAt: story.created_at,
+      authorGid: story.created_by?.gid,
+      authorName: story.created_by?.name,
+    };
+  }
+
+  async listTaskComments(taskGid: string): Promise<IncomingComment[]> {
+    const query = new URLSearchParams({
+      opt_fields: "gid,type,text,html_text,created_at,created_by.gid,created_by.name",
+      limit: "100",
+    });
+    const stories = (await this.request<
+      Array<{
+        gid: string;
+        type?: string;
+        text?: string;
+        html_text?: string;
+        created_at?: string;
+        created_by?: { gid?: string; name?: string };
+      }>
+    >(`/tasks/${taskGid}/stories?${query}`)).data;
+
+    return stories
+      .filter((story) => story.type === "comment" && story.created_at)
+      .map((story) => ({
+        gid: story.gid,
+        taskGid,
+        text: stripHtml(story.text ?? story.html_text ?? ""),
+        htmlText: story.html_text,
+        createdAt: story.created_at!,
+        authorGid: story.created_by?.gid,
+        authorName: story.created_by?.name,
+      }))
+      .filter((comment) => comment.text.trim().length > 0)
+      .sort((left, right) => left.createdAt.localeCompare(right.createdAt));
   }
 
   async completeTask(taskGid: string): Promise<void> {
@@ -206,7 +296,7 @@ export class AsanaClient {
     }
 
     const subtaskQuery = new URLSearchParams({
-      opt_fields: "name,completed,notes,assignee.name",
+      opt_fields: "name,completed,notes,assignee.gid,assignee.name",
       limit: "100",
     });
     const subtasks = (await this.request<
@@ -214,7 +304,7 @@ export class AsanaClient {
         name: string;
         completed?: boolean;
         notes?: string;
-        assignee?: { name?: string };
+        assignee?: { gid?: string; name?: string };
       }>
     >(`/tasks/${parent.gid}/subtasks?${subtaskQuery}`)).data.map(
       (subtask): PromoDesignSubtask => ({
@@ -222,11 +312,13 @@ export class AsanaClient {
         completed: Boolean(subtask.completed),
         notes: stripHtml(subtask.notes ?? ""),
         assignee: subtask.assignee?.name,
+        assignee_gid: subtask.assignee?.gid,
+        assignee_name: subtask.assignee?.name,
       }),
     );
 
     const storyQuery = new URLSearchParams({
-      opt_fields: "type,text,html_text,created_by.name",
+      opt_fields: "type,text,html_text,created_at,created_by.name",
       limit: "100",
     });
     const comments = (await this.request<
@@ -234,6 +326,7 @@ export class AsanaClient {
         type?: string;
         text?: string;
         html_text?: string;
+        created_at?: string;
         created_by?: { name?: string };
       }>
     >(`/tasks/${parent.gid}/stories?${storyQuery}`)).data
@@ -241,6 +334,7 @@ export class AsanaClient {
       .map((story): PromoDesignComment => ({
         author: story.created_by?.name,
         text: stripHtml(story.text ?? story.html_text ?? ""),
+        created_at: story.created_at,
       }))
       .filter((comment) => comment.text.trim().length > 0);
 
@@ -354,6 +448,19 @@ export function isDueWithinDays(
   const untilDue = daysUntilDue(task);
   if (untilDue === null) return false;
   return untilDue <= days;
+}
+
+export function getMissingLinkRecipient(
+  designContext: PromoDesignContext,
+  fallback: { gid: string; name: string } | null,
+): { gid: string; name: string } | null {
+  const upload = designContext.subtasks.find((subtask) =>
+    /^banner upload$/i.test(subtask.name.trim())
+  );
+  if (upload?.assignee_gid && upload.assignee_name) {
+    return { gid: upload.assignee_gid, name: upload.assignee_name };
+  }
+  return fallback;
 }
 
 export function isPromoQaTask(task: Pick<AsanaTask, "name">): boolean {

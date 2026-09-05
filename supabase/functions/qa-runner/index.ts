@@ -1,6 +1,6 @@
 import { createClient } from "npm:@supabase/supabase-js@2";
 import { AnthropicClient } from "../_shared/ai.ts";
-import { AsanaClient, isPromoQaTask, isDueWithinDays, stripHtml } from "../_shared/asana.ts";
+import { AsanaClient, getMissingLinkRecipient, isPromoQaTask, isDueWithinDays, stripHtml } from "../_shared/asana.ts";
 import {
   sendAlertEmail,
   type SmtpConfig,
@@ -9,9 +9,17 @@ import {
 import { getIndexJson, getPublishedThemeId } from "../_shared/shopify.ts";
 import type {
   AsanaTask,
+  CommentIntent,
+  IncomingComment,
+  PromoDesignContext,
   StoreCredential,
   TaskContext,
 } from "../_shared/types.ts";
+import {
+  alreadyRepliedToComment,
+  pickIncomingComment,
+  shouldListenToComment,
+} from "../_shared/comment-agent.ts";
 import {
   applyDeterministicGuards,
   collectBannerBlocks,
@@ -53,9 +61,17 @@ const smtp = getSmtpConfig((name) => Deno.env.get(name));
 const MISSING_LINK_DUE_WINDOW_DAYS = 3;
 const DESIGN_READINESS_THRESHOLD = 0.7;
 const MISSING_LINK_COMMENT =
-  "Hi! This promo QA task is due soon, but I do not see a Shopify theme editor / promo scheduler link in the task notes yet. Could you add it when the promo is ready to schedule?";
+  "Hey — this one's due soon but I don't see a Shopify theme editor / promo scheduler link in the notes yet. Drop it in when it's ready to schedule?";
 const MISSING_LINK_COMMENT_FINGERPRINT =
   "promo scheduler link in the task notes yet";
+const MISSING_LINK_FOLLOWUP_COMMENT =
+  "Got it that this is ready for QA — I still need the Shopify theme editor / promo scheduler link in this task's notes though. Can you paste it here?";
+const MISSING_LINK_FOLLOWUP_FINGERPRINT =
+  "still need the shopify theme editor / promo scheduler link";
+const READY_FOR_QA_COMMENT =
+  /\b(?:ready for qa|set for your qa|set for qa|rfr|this is uploaded|uploaded!|upload complete|ready for review)\b/i;
+const UNREGISTERED_STORE_COMMENT_FINGERPRINT =
+  "theme access is not configured yet for";
 const FAILURE_COMMENT_FINGERPRINT =
   "automated promo qa found configuration issues";
 
@@ -63,8 +79,14 @@ let registeredStoresCache: RegisteredStore[] | null = null;
 
 interface RunRequest {
   taskGid?: string;
+  storyGid?: string;
   dryRun?: boolean;
   force?: boolean;
+}
+
+interface ConversationContext {
+  incoming: IncomingComment;
+  intent: CommentIntent;
 }
 
 interface RunResult {
@@ -205,40 +227,70 @@ async function processTask(
     storeSlug: context.editorTarget?.storeSlug ?? storeResolution.store_slug ?? undefined,
     themeId: context.editorTarget?.themeId,
   };
+  const storeRegistered = Boolean(
+    context.editorTarget &&
+      stores.some((store) => store.store_slug === context.editorTarget?.storeSlug),
+  );
+  const conversation = await resolveConversation(
+    context,
+    input,
+    storeRegistered,
+  );
+  if (conversation?.intent.forceQa) {
+    input = { ...input, force: true };
+  }
+
+  if (
+    conversation &&
+    conversation.intent.replyNeeded &&
+    !conversation.intent.runQa &&
+    !input.force
+  ) {
+    await replyToIncoming(context, conversation, {
+      outcome: "reply",
+      outcomeSummary: conversation.intent.reply ?? "Noted.",
+      storeRegistered,
+    });
+    return {
+      ...resultMeta,
+      status: "replied",
+      action: "commented",
+      details: conversation.intent,
+    };
+  }
 
   if (!context.editorTarget) {
-    return handleMissingEditorUrl(context, input, resultMeta, storeResolution);
+    return handleMissingEditorUrl(
+      context,
+      input,
+      resultMeta,
+      storeResolution,
+      conversation,
+    );
   }
 
   const store = await getStore(context.editorTarget.storeSlug);
 
   if (!store) {
-    const message =
-      `Theme Access is not configured for ${context.editorTarget.shopDomain}.\n` +
-      `Asana task: ${context.task.name} (${context.task.gid})`;
-    if (!input.dryRun) {
-      await notify(
-        smtp,
-        `Promo QA store needs setup: ${context.editorTarget.storeSlug}`,
-        message,
-      );
-      await recordRun({
-        context,
-        task: context.task,
-        status: "skipped_unregistered",
-        action: "emailed",
-        verdict: { reason: message },
-      });
-    }
-    return {
-      ...resultMeta,
-      status: "skipped_unregistered",
-      action: input.dryRun ? "none" : "emailed",
-      details: message,
-    };
+    return handleUnregisteredStore(context, input, resultMeta, conversation);
   }
 
   if (!input.force && !input.dryRun && await alreadyProcessed(context.task)) {
+    if (conversation?.intent.replyNeeded) {
+      const previous = await getPreviousQaSummary(task.gid);
+      await replyToIncoming(context, conversation, {
+        outcome: previous?.status ?? "skipped_unchanged",
+        outcomeSummary: previous?.summary ??
+          "Nothing new to check yet — the task notes have not changed since the last QA run.",
+        storeRegistered: true,
+      });
+      return {
+        ...resultMeta,
+        status: "skipped_unchanged",
+        action: "commented",
+        details: conversation.intent,
+      };
+    }
     return {
       ...resultMeta,
       status: "skipped_unchanged",
@@ -304,6 +356,13 @@ async function processTask(
 
   if (confidentlyPassed) {
     await asana.completeTask(task.gid);
+    if (conversation?.intent.replyNeeded) {
+      await replyToIncoming(context, conversation, {
+        outcome: "passed",
+        outcomeSummary: verdict.summary,
+        storeRegistered: true,
+      });
+    }
     await recordRun({
       context,
       task: await asana.getTask(task.gid),
@@ -331,24 +390,41 @@ async function processTask(
     );
   }
 
-  const shouldComment = !input.dryRun &&
+  const repliedToHuman = conversation?.intent.replyNeeded
+    ? await replyToIncoming(context, conversation, {
+      outcome: "failed",
+      outcomeSummary: verdict.summary,
+      issues: verdict.banners.flatMap((banner) => banner.issues ?? []),
+      storeRegistered: true,
+    })
+    : false;
+  const shouldComment = !input.dryRun && !repliedToHuman &&
     (input.force || !await failureCommentAlreadySent(task.gid, verdict));
   if (shouldComment) {
+    await recordRun({
+      context,
+      task: context.task,
+      status: "failed",
+      action: "commented",
+      verdict: { spec, verdict, publishedThemeId, commentPending: true },
+      confidence: Math.min(spec.confidence, verdict.confidence),
+    });
     await asana.addQaComment(
       task.gid,
       context.creator,
       formatFailureComment(verdict),
+      FAILURE_COMMENT_FINGERPRINT,
     );
   }
 
-  const refreshedTask = shouldComment
+  const refreshedTask = shouldComment || repliedToHuman
     ? await asana.getTask(task.gid)
     : context.task;
   await recordRun({
     context,
     task: refreshedTask,
     status: "failed",
-    action: shouldComment ? "commented" : "none",
+    action: (shouldComment || repliedToHuman) ? "commented" : "none",
     verdict: { spec, verdict, publishedThemeId },
     confidence: Math.min(spec.confidence, verdict.confidence),
   });
@@ -356,10 +432,257 @@ async function processTask(
     ...resultMeta,
     publishedThemeId,
     status: "failed",
-    action: shouldComment ? "commented" : "none",
+    action: (shouldComment || repliedToHuman) ? "commented" : "none",
     confidence: Math.min(spec.confidence, verdict.confidence),
     details: verdict,
   };
+}
+
+function unregisteredStoreMessage(
+  shopDomain: string,
+  task: AsanaTask,
+): string {
+  return `Theme Access is not configured for ${shopDomain}.\n` +
+    `Asana task: ${task.name} (${task.gid})`;
+}
+
+function unregisteredStoreComment(shopDomain: string): string {
+  return `Found the editor link, but Theme Access is not configured yet for ${shopDomain} so I can't inspect the theme. Once that store is added in Promo QA I'll pick this up on the next run.`;
+}
+
+async function handleUnregisteredStore(
+  context: TaskContext,
+  input: RunRequest,
+  resultMeta: Pick<
+    RunResult,
+    "taskGid" | "taskName" | "parentTaskGid" | "storeSlug" | "themeId"
+  >,
+  conversation: ConversationContext | null,
+): Promise<RunResult> {
+  const shopDomain = context.editorTarget!.shopDomain;
+  const message = unregisteredStoreMessage(shopDomain, context.task);
+
+  if (
+    conversation?.intent.replyNeeded &&
+    await replyToIncoming(context, conversation, {
+      outcome: "skipped_unregistered",
+      outcomeSummary: message,
+      storeRegistered: false,
+    })
+  ) {
+    if (!input.dryRun) {
+      await recordRun({
+        context,
+        task: context.task,
+        status: "skipped_unregistered",
+        action: "commented",
+        verdict: { reason: message },
+      });
+    }
+    return {
+      ...resultMeta,
+      status: "skipped_unregistered",
+      action: "commented",
+      details: message,
+    };
+  }
+
+  if (!input.dryRun && !input.force &&
+    await unregisteredStoreAlreadyHandled(context.task)) {
+    return {
+      ...resultMeta,
+      status: "skipped_unregistered",
+      action: "none",
+      details: message,
+    };
+  }
+
+  const designContext = await asana.getPromoDesignContext(context.parent);
+  const recipient = getMissingLinkRecipient(designContext, context.creator);
+  const shouldComment = !input.dryRun &&
+    !await asana.hasCommentContaining(
+      context.task.gid,
+      UNREGISTERED_STORE_COMMENT_FINGERPRINT,
+    );
+  const shouldEmail = !input.dryRun;
+
+  if (shouldComment) {
+    await asana.addQaComment(
+      context.task.gid,
+      recipient,
+      unregisteredStoreComment(shopDomain),
+      UNREGISTERED_STORE_COMMENT_FINGERPRINT,
+    );
+  }
+  if (shouldEmail) {
+    await notify(
+      smtp,
+      `Promo QA store needs setup: ${context.editorTarget!.storeSlug}`,
+      message,
+    );
+  }
+  if (!input.dryRun) {
+    await recordRun({
+      context,
+      task: context.task,
+      status: "skipped_unregistered",
+      action: shouldComment ? "commented" : shouldEmail ? "emailed" : "none",
+      verdict: { reason: message },
+    });
+  }
+
+  return {
+    ...resultMeta,
+    status: "skipped_unregistered",
+    action: input.dryRun
+      ? "none"
+      : shouldComment
+      ? "commented"
+      : shouldEmail
+      ? "emailed"
+      : "none",
+    details: message,
+  };
+}
+
+async function unregisteredStoreAlreadyHandled(
+  task: AsanaTask,
+): Promise<boolean> {
+  const { data, error } = await supabase
+    .from("qa_runs")
+    .select("status,source_modified_at,action_taken")
+    .eq("asana_task_gid", task.gid)
+    .maybeSingle();
+  if (error) throw error;
+  if (data?.status !== "skipped_unregistered") return false;
+  if (!task.modified_at || !data.source_modified_at) return true;
+  return new Date(data.source_modified_at).getTime() >=
+    new Date(task.modified_at).getTime();
+}
+
+async function resolveConversation(
+  context: TaskContext,
+  input: RunRequest,
+  storeRegistered: boolean,
+): Promise<ConversationContext | null> {
+  if (input.dryRun) return null;
+
+  const [qaComments, parentComments, preferredStory] = await Promise.all([
+    asana.listTaskComments(context.task.gid),
+    context.parent?.gid
+      ? asana.listTaskComments(context.parent.gid)
+      : Promise.resolve([]),
+    input.storyGid ? asana.getStory(input.storyGid) : Promise.resolve(null),
+  ]);
+  const comments = [...parentComments, ...qaComments];
+  let incoming = pickIncomingComment(
+    comments,
+    input.storyGid,
+    EMIL_ASANA_GID,
+    context.task.gid,
+  );
+  if (
+    preferredStory &&
+    shouldListenToComment(preferredStory, EMIL_ASANA_GID, {
+      onQaTask: preferredStory.taskGid === context.task.gid,
+    })
+  ) {
+    incoming = preferredStory;
+  }
+  if (!incoming) return null;
+  if (alreadyRepliedToComment(incoming, comments, EMIL_ASANA_GID)) {
+    return null;
+  }
+
+  const previous = await getPreviousQaSummary(context.task.gid);
+  const intent = await anthropic.interpretTaskComment({
+    incoming,
+    recentComments: comments.slice(-8).map((comment) => ({
+      author: comment.authorName,
+      text: comment.text,
+      createdAt: comment.createdAt,
+    })),
+    qaTaskName: context.task.name,
+    parentName: context.parent?.name,
+    hasEditorLink: Boolean(context.editorTarget),
+    storeRegistered,
+    lastQaStatus: previous?.status ?? null,
+    lastQaSummary: previous?.summary ?? null,
+  });
+
+  if (
+    intent.action === "ignore" &&
+    !intent.replyNeeded &&
+    !intent.runQa &&
+    !intent.forceQa
+  ) {
+    return null;
+  }
+
+  return { incoming, intent };
+}
+
+async function replyToIncoming(
+  context: TaskContext,
+  conversation: ConversationContext,
+  outcome: {
+    outcome: string;
+    outcomeSummary: string;
+    issues?: string[];
+    storeRegistered?: boolean;
+  },
+): Promise<boolean> {
+  const recipient = conversation.incoming.authorGid &&
+      conversation.incoming.authorName
+    ? {
+      gid: conversation.incoming.authorGid,
+      name: conversation.incoming.authorName,
+    }
+    : context.creator;
+
+  let message = conversation.intent.reply ?? outcome.outcomeSummary;
+  try {
+    message = await anthropic.composeQaReply({
+      incoming: conversation.incoming,
+      draftReply: conversation.intent.reply,
+      qaTaskName: context.task.name,
+      parentName: context.parent?.name,
+      outcome: outcome.outcome,
+      outcomeSummary: outcome.outcomeSummary,
+      issues: outcome.issues,
+      hasEditorLink: Boolean(context.editorTarget),
+      storeRegistered: outcome.storeRegistered ?? Boolean(context.editorTarget),
+    });
+  } catch (error) {
+    console.error("Failed to compose conversational QA reply:", error);
+  }
+  if (!message.trim()) return false;
+
+  await asana.addQaComment(conversation.incoming.taskGid, recipient, message);
+  return true;
+}
+
+async function getPreviousQaSummary(
+  taskGid: string,
+): Promise<{ status: string; summary: string } | null> {
+  const { data, error } = await supabase
+    .from("qa_runs")
+    .select("status,verdict_json")
+    .eq("asana_task_gid", taskGid)
+    .maybeSingle();
+  if (error) throw error;
+  if (!data) return null;
+
+  const verdictJson = data.verdict_json as {
+    reason?: string;
+    verdict?: { summary?: string };
+    summary?: string;
+  } | null;
+  const summary = verdictJson?.verdict?.summary ??
+    verdictJson?.summary ??
+    verdictJson?.reason ??
+    data.status;
+  return { status: data.status, summary };
 }
 
 async function handleMissingEditorUrl(
@@ -370,10 +693,25 @@ async function handleMissingEditorUrl(
     "taskGid" | "taskName" | "parentTaskGid" | "storeSlug" | "themeId"
   >,
   storeResolution: Awaited<ReturnType<typeof resolveStoreSlug>>,
+  conversation: ConversationContext | null,
 ): Promise<RunResult> {
   const waitingMessage =
     "Waiting for a Shopify theme editor / promo scheduler link in the task notes.";
   const dueSoon = isDueWithinDays(context.task, MISSING_LINK_DUE_WINDOW_DAYS);
+
+  if (conversation?.intent.replyNeeded) {
+    await replyToIncoming(context, conversation, {
+      outcome: "skipped_not_ready",
+      outcomeSummary: waitingMessage,
+      storeRegistered: Boolean(storeResolution.store_slug),
+    });
+    return {
+      ...resultMeta,
+      status: "skipped_not_ready",
+      action: "commented",
+      details: { reason: waitingMessage, storeResolution, conversation: conversation.intent },
+    };
+  }
 
   if (!dueSoon) {
     return {
@@ -410,14 +748,31 @@ async function handleMissingEditorUrl(
     };
   }
 
-  const shouldComment = !input.dryRun &&
-    (input.force ||
-      !await missingLinkReminderAlreadySent(context.task.gid));
+  const reminder = await resolveMissingLinkReminder(context.task.gid, designContext);
+  const recipient = getMissingLinkRecipient(designContext, context.creator);
+  const shouldComment = !input.dryRun && (input.force || reminder.shouldSend);
+
   if (shouldComment) {
+    await recordRun({
+      context,
+      task: context.task,
+      status: "skipped_not_ready",
+      action: "commented",
+      verdict: {
+        reason: waitingMessage,
+        dueSoon: true,
+        designAssessment,
+        commentPending: true,
+        reminderKind: reminder.fingerprint === MISSING_LINK_FOLLOWUP_FINGERPRINT
+          ? "followup"
+          : "initial",
+      },
+    });
     await asana.addQaComment(
       context.task.gid,
-      context.creator,
-      MISSING_LINK_COMMENT,
+      recipient,
+      reminder.message,
+      reminder.fingerprint,
     );
     await recordRun({
       context,
@@ -429,6 +784,9 @@ async function handleMissingEditorUrl(
         dueSoon: true,
         designAssessment,
         reminderSent: true,
+        reminderKind: reminder.fingerprint === MISSING_LINK_FOLLOWUP_FINGERPRINT
+          ? "followup"
+          : "initial",
       },
     });
   }
@@ -443,8 +801,63 @@ async function handleMissingEditorUrl(
       designAssessment,
       storeResolution,
       notifiedCreator: shouldComment,
+      notifiedRecipient: shouldComment ? recipient?.name ?? null : null,
+      reminderKind: shouldComment
+        ? (reminder.fingerprint === MISSING_LINK_FOLLOWUP_FINGERPRINT
+          ? "followup"
+          : "initial")
+        : null,
     },
   };
+}
+
+async function resolveMissingLinkReminder(
+  taskGid: string,
+  designContext: PromoDesignContext,
+): Promise<{ shouldSend: boolean; message: string; fingerprint: string }> {
+  const initial = {
+    message: MISSING_LINK_COMMENT,
+    fingerprint: MISSING_LINK_COMMENT_FINGERPRINT,
+  };
+  const followUp = {
+    message: MISSING_LINK_FOLLOWUP_COMMENT,
+    fingerprint: MISSING_LINK_FOLLOWUP_FINGERPRINT,
+  };
+
+  const [initialComment, followUpComment] = await Promise.all([
+    asana.getLatestCommentContaining(taskGid, initial.fingerprint),
+    asana.getLatestCommentContaining(taskGid, followUp.fingerprint),
+  ]);
+
+  if (!initialComment) {
+    const { data, error } = await supabase
+      .from("qa_runs")
+      .select("status,action_taken")
+      .eq("asana_task_gid", taskGid)
+      .maybeSingle();
+    if (error) throw error;
+    if (data?.status === "skipped_not_ready" && data.action_taken === "commented") {
+      return { shouldSend: false, ...initial };
+    }
+    return { shouldSend: true, ...initial };
+  }
+
+  if (followUpComment) {
+    return { shouldSend: false, ...followUp };
+  }
+
+  const lastReminderAt = initialComment.created_at;
+  const readySignalAfterReminder = designContext.comments.some((comment) =>
+    comment.created_at &&
+    comment.created_at.localeCompare(lastReminderAt) > 0 &&
+    READY_FOR_QA_COMMENT.test(comment.text)
+  );
+
+  if (readySignalAfterReminder) {
+    return { shouldSend: true, ...followUp };
+  }
+
+  return { shouldSend: false, ...followUp };
 }
 
 async function listRegisteredStores(): Promise<RegisteredStore[]> {
@@ -461,20 +874,6 @@ async function listRegisteredStores(): Promise<RegisteredStore[]> {
     display_name: store.display_name ?? null,
   }));
   return registeredStoresCache;
-}
-
-async function missingLinkReminderAlreadySent(taskGid: string): Promise<boolean> {
-  if (await asana.hasCommentContaining(taskGid, MISSING_LINK_COMMENT_FINGERPRINT)) {
-    return true;
-  }
-
-  const { data, error } = await supabase
-    .from("qa_runs")
-    .select("status,action_taken")
-    .eq("asana_task_gid", taskGid)
-    .maybeSingle();
-  if (error) throw error;
-  return data?.status === "skipped_not_ready" && data.action_taken === "commented";
 }
 
 async function failureCommentAlreadySent(
@@ -568,8 +967,8 @@ async function recordRun(input: {
     parent_task_gid: input.context?.parent?.gid ?? input.task.parent?.gid ??
       null,
     source_modified_at: input.task.modified_at ?? null,
-    store_slug: input.context?.editorTarget.storeSlug ?? null,
-    theme_id: input.context?.editorTarget.themeId ?? null,
+    store_slug: input.context?.editorTarget?.storeSlug ?? null,
+    theme_id: input.context?.editorTarget?.themeId ?? null,
     status: input.status,
     verdict_json: input.verdict ?? {},
     confidence: input.confidence ?? null,

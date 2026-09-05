@@ -66,19 +66,21 @@ Deno.serve(async (request) => {
       return new Response(null, { status: 204 });
     }
 
-    const taskGids = await resolvePromoQaTaskGids(events);
+    const targets = await resolvePromoQaTargets(events);
     const invoked: string[] = [];
-    for (const taskGid of taskGids) {
-      if (await isDebounced(taskGid)) continue;
-      await markDebounced(taskGid);
+    for (const target of targets) {
+      const skipDebounce = Boolean(target.storyGid);
+      if (!skipDebounce && await isDebounced(target.taskGid)) continue;
+      await markDebounced(target.taskGid);
       await invokeQaRunner({
         supabaseUrl,
         runnerSecret,
         trigger: "webhook",
         requestedBy: "asana-webhook",
-        taskGid,
+        taskGid: target.taskGid,
+        storyGid: target.storyGid,
       });
-      invoked.push(taskGid);
+      invoked.push(target.taskGid);
     }
 
     return Response.json({
@@ -92,19 +94,23 @@ Deno.serve(async (request) => {
   }
 });
 
-async function resolvePromoQaTaskGids(
+async function resolvePromoQaTargets(
   events: AsanaWebhookEvent[],
-): Promise<string[]> {
-  const taskGids = new Set<string>();
+): Promise<Array<{ taskGid: string; storyGid?: string }>> {
+  const byTask = new Map<string, string | undefined>();
 
   for (const event of events) {
     const taskGid = await resolveTaskGidFromEvent(event);
     if (!taskGid) continue;
+    const storyGid = event.resource.resource_type === "story"
+      ? event.resource.gid
+      : undefined;
 
     try {
       const task = await asana.getTask(taskGid);
+      const qaGids: string[] = [];
       if (!task.completed && isPromoQaTask(task) && task.assignee?.gid === assigneeGid) {
-        taskGids.add(task.gid);
+        qaGids.push(task.gid);
       }
 
       const subtasks = await asana.listPromoQaSubtasksForParent(
@@ -112,14 +118,23 @@ async function resolvePromoQaTaskGids(
         assigneeGid,
       );
       for (const subtask of subtasks) {
-        taskGids.add(subtask.gid);
+        qaGids.push(subtask.gid);
+      }
+
+      for (const qaGid of qaGids) {
+        if (storyGid || !byTask.has(qaGid)) {
+          byTask.set(qaGid, storyGid ?? byTask.get(qaGid));
+        }
       }
     } catch (error) {
       console.error(`Failed to resolve promo QA tasks for ${taskGid}:`, error);
     }
   }
 
-  return [...taskGids];
+  return [...byTask.entries()].map(([taskGid, storyGid]) => ({
+    taskGid,
+    storyGid,
+  }));
 }
 
 async function resolveTaskGidFromEvent(

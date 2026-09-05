@@ -6,6 +6,7 @@ export interface InvokeQaRunnerInput {
   trigger: RunnerTrigger;
   requestedBy?: string;
   taskGid?: string;
+  storyGid?: string;
   dryRun?: boolean;
   force?: boolean;
 }
@@ -33,6 +34,7 @@ export async function invokeQaRunner(
       },
       body: JSON.stringify({
         taskGid: input.taskGid,
+        storyGid: input.storyGid,
         dryRun: input.dryRun ?? false,
         force: input.force ?? false,
       }),

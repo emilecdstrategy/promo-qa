@@ -1,6 +1,8 @@
 import type {
   CandidateMatch,
+  CommentIntent,
   DesignReadinessAssessment,
+  IncomingComment,
   ParsedPromoSpec,
   QaVerdict,
 } from "./types.ts";
@@ -202,6 +204,89 @@ Rules:
       throw new Error("Claude store inference omitted confidence");
     }
     return result;
+  }
+
+  async interpretTaskComment(input: {
+    incoming: IncomingComment;
+    recentComments: Array<{
+      author?: string;
+      text: string;
+      createdAt: string;
+    }>;
+    qaTaskName: string;
+    parentName?: string;
+    hasEditorLink: boolean;
+    storeRegistered: boolean;
+    lastQaStatus?: string | null;
+    lastQaSummary?: string | null;
+  }): Promise<CommentIntent> {
+    const intent = await this.jsonMessage<CommentIntent>(
+      `You are Emil's Promo QA automation on Asana. Someone just commented on a promo QA task (or tagged Emil on the parent promo card).
+Decide how to react. Return JSON only:
+{"action":"run_qa"|"reply"|"ignore","runQa":false,"forceQa":false,"replyNeeded":false,"reply":"string|null","reason":"string"}
+Rules:
+- action=run_qa when they say the banner is ready, uploaded, fixed, added a link, or ask you to check/QA again.
+- forceQa=true when they claim something changed since the last check (fixed, enabled, updated dates, added the editor link, "set for your QA").
+- action=reply when they ask a question, push back, explain a blocker, or need a human-sounding answer. You may also set runQa=true if a fresh check would help.
+- action=ignore for unrelated team chatter that is not directed at QA / Emil.
+- replyNeeded=true whenever you should post a comment back. Write reply as Emil: casual, short (1-2 sentences), specific, no markdown, no @mentions.
+- If hasEditorLink is false, tell them you still need the Shopify theme editor / promo scheduler link in the Banner Upload QA notes.
+- If storeRegistered is false, explain Theme Access is not configured for that store yet, so you cannot inspect the theme.
+- Do not invent Shopify findings. If you have not just verified the theme, do not claim the banner is correct or wrong.
+- Use lastQaStatus/lastQaSummary only as prior context, not as a new check.
+- reply can be null when replyNeeded is false.`,
+      input,
+      1200,
+    );
+
+    if (
+      intent.action !== "run_qa" &&
+      intent.action !== "reply" &&
+      intent.action !== "ignore"
+    ) {
+      throw new Error("Claude comment intent returned an invalid action");
+    }
+    return {
+      action: intent.action,
+      runQa: Boolean(intent.runQa) || intent.action === "run_qa",
+      forceQa: Boolean(intent.forceQa),
+      replyNeeded: Boolean(intent.replyNeeded) || intent.action === "reply",
+      reply: typeof intent.reply === "string" && intent.reply.trim()
+        ? intent.reply.trim()
+        : null,
+      reason: intent.reason ?? "",
+    };
+  }
+
+  async composeQaReply(input: {
+    incoming: IncomingComment;
+    draftReply?: string | null;
+    qaTaskName: string;
+    parentName?: string;
+    outcome: string;
+    outcomeSummary: string;
+    issues?: string[];
+    hasEditorLink: boolean;
+    storeRegistered: boolean;
+  }): Promise<string> {
+    const result = await this.jsonMessage<{ reply: string }>(
+      `You write Emil's follow-up Asana comment after Promo QA looked at a tagged message.
+Return JSON only: {"reply":"string"}
+Rules:
+- Super casual, like Slack. 1 sentence, 2 max. No "Hi", no "Thanks for", no corporate tone.
+- Answer their comment using the QA outcome. Do not invent extra issues.
+- No markdown and no @mentions (the system tags them separately).
+- If outcome is skipped_not_ready, just ask for the theme editor link in the Banner Upload QA notes.
+- If outcome is skipped_unregistered, say that store isn't set up in Promo QA yet so you can't check the theme.
+- If outcome is failed, name the issue in plain English.
+- If outcome is passed, say it looks good and you completed it.`,
+      input,
+      700,
+    );
+    if (!result.reply?.trim()) {
+      throw new Error("Claude reply omitted text");
+    }
+    return result.reply.trim();
   }
 }
 

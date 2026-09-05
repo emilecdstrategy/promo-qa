@@ -42,11 +42,35 @@ export interface PromoDesignSubtask {
   completed: boolean;
   notes?: string;
   assignee?: string;
+  assignee_gid?: string;
+  assignee_name?: string;
 }
 
 export interface PromoDesignComment {
   author?: string;
   text: string;
+  created_at?: string;
+}
+
+export interface IncomingComment {
+  gid: string;
+  taskGid: string;
+  text: string;
+  htmlText?: string;
+  createdAt: string;
+  authorGid?: string;
+  authorName?: string;
+}
+
+export type CommentAgentAction = "run_qa" | "reply" | "ignore";
+
+export interface CommentIntent {
+  action: CommentAgentAction;
+  runQa: boolean;
+  forceQa: boolean;
+  replyNeeded: boolean;
+  reply: string | null;
+  reason: string;
 }
 
 export interface PromoDesignContext {
