@@ -19,3 +19,6 @@ shopify-auth/
 
 # Local Netlify folder
 .netlify
+
+# Stray root Deno lockfile (the functions lockfile in supabase/functions/ stays tracked)
+/deno.lock
