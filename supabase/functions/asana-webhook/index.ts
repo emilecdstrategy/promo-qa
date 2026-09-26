@@ -1,8 +1,9 @@
 import { createClient } from "npm:@supabase/supabase-js@2";
 import {
   AsanaClient,
+  findMatchingWebhookSecret,
   isPromoQaTask,
-  verifyAsanaWebhookSignatureAgainstSecrets,
+  promoteSecret,
 } from "../_shared/asana.ts";
 import { invokeQaRunner } from "../_shared/runner.ts";
 import type { AsanaWebhookEvent, AsanaWebhookPayload } from "../_shared/types.ts";
@@ -48,12 +49,18 @@ Deno.serve(async (request) => {
     }
 
     const signature = request.headers.get("X-Hook-Signature");
-    if (!await verifyAsanaWebhookSignatureAgainstSecrets(
+    const matchedIndex = await findMatchingWebhookSecret(
       secrets,
       rawBody,
       signature,
-    )) {
+    );
+    if (matchedIndex < 0) {
       return new Response("Invalid signature", { status: 401 });
+    }
+    if (matchedIndex > 0 && !Deno.env.get("ASANA_WEBHOOK_SECRET")) {
+      await promoteWebhookSecret(secrets[matchedIndex]).catch(
+        (error) => console.error("Failed to reorder webhook secrets:", error),
+      );
     }
 
     if (!await isAutomationEnabled()) {
@@ -166,7 +173,19 @@ async function getWebhookSecrets(): Promise<string[]> {
 }
 
 async function storeWebhookSecret(secret: string): Promise<void> {
-  const secrets = [...new Set([...(await getWebhookSecrets()), secret])];
+  // Newest first: a freshly registered webhook starts sending events right away.
+  await saveWebhookSecrets([...new Set([secret, ...(await getWebhookSecrets())])]);
+}
+
+async function promoteWebhookSecret(secret: string): Promise<void> {
+  // Re-read so a secret stored by a concurrent handshake is never dropped.
+  const fresh = await getWebhookSecrets();
+  const index = fresh.indexOf(secret);
+  if (index <= 0) return;
+  await saveWebhookSecrets(promoteSecret(fresh, index));
+}
+
+async function saveWebhookSecrets(secrets: string[]): Promise<void> {
   const { error } = await supabase.from("promo_qa_settings").upsert({
     key: "asana_webhook_secret",
     value: {

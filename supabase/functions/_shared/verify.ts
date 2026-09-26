@@ -142,6 +142,25 @@ export function formatFailureComment(verdict: QaVerdict): string {
   return lines.join("\n").trim();
 }
 
+/**
+ * True when an earlier failure comment already lists every current issue, so
+ * posting again would only repeat it. New or changed issues return false.
+ */
+export function failureIssuesCoveredBy(
+  verdict: Pick<QaVerdict, "banners">,
+  previousCommentText: string,
+): boolean {
+  const normalize = (value: string) =>
+    value.toLowerCase().replace(/\s+/g, " ").trim();
+  const previous = normalize(previousCommentText);
+  const issues = verdict.banners
+    .filter((banner) => !banner.ok)
+    .flatMap((banner) => banner.issues ?? [])
+    .map(normalize)
+    .filter(Boolean);
+  return issues.every((issue) => previous.includes(issue));
+}
+
 function guardBanner(
   verdict: BannerVerdict,
   match: CandidateMatch | undefined,

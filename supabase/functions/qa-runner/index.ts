@@ -1,6 +1,13 @@
 import { createClient } from "npm:@supabase/supabase-js@2";
 import { AnthropicClient } from "../_shared/ai.ts";
-import { AsanaClient, getMissingLinkRecipient, isPromoQaTask, isDueWithinDays, stripHtml } from "../_shared/asana.ts";
+import {
+  AsanaApiError,
+  AsanaClient,
+  getMissingLinkRecipient,
+  isDueWithinDays,
+  isPromoQaTask,
+  stripHtml,
+} from "../_shared/asana.ts";
 import {
   sendAlertEmail,
   type SmtpConfig,
@@ -23,6 +30,7 @@ import {
 import {
   applyDeterministicGuards,
   collectBannerBlocks,
+  failureIssuesCoveredBy,
   formatFailureComment,
   matchExpectedBanners,
 } from "../_shared/verify.ts";
@@ -69,7 +77,7 @@ const MISSING_LINK_FOLLOWUP_COMMENT =
 const MISSING_LINK_FOLLOWUP_FINGERPRINT =
   "still need the shopify theme editor / promo scheduler link";
 const READY_FOR_QA_COMMENT =
-  /\b(?:ready for qa|set for your qa|set for qa|rfr|this is uploaded|uploaded!|upload complete|ready for review)\b/i;
+  /\b(?:ready for qa|set for your qa|set for qa|please qa|now is fixed|rfr|this is uploaded|upload complete|ready for review)\b|\buploaded!/i;
 const UNREGISTERED_STORE_COMMENT_FINGERPRINT =
   "theme access is not configured yet for";
 const FAILURE_COMMENT_FINGERPRINT =
@@ -149,6 +157,9 @@ Deno.serve(async (request) => {
       ? [await asana.getTask(input.taskGid)]
       : (await asana.listIncompleteTasks(EMIL_ASANA_GID, ASANA_WORKSPACE_GID))
         .filter(isPromoQaTask);
+    await ensureQaTaskWebhooks(tasks, { fullSweep: !input.taskGid }).catch((error) => {
+      console.error("Failed to sync task webhooks:", error);
+    });
 
     const results: RunResult[] = [];
     for (const task of tasks) {
@@ -217,6 +228,17 @@ async function processTask(
   task: AsanaTask,
   input: RunRequest,
 ): Promise<RunResult> {
+  if (!isPromoQaTask(task)) {
+    return {
+      taskGid: task.gid,
+      taskName: task.name,
+      parentTaskGid: task.parent?.gid,
+      status: "skipped_not_banner",
+      action: "none",
+      details: "Skipped because this is not a banner QA task.",
+    };
+  }
+
   const context = await asana.getTaskContext(task.gid);
   const stores = await listRegisteredStores();
   const storeResolution = await resolveStoreSlug(context, stores, anthropic);
@@ -398,8 +420,10 @@ async function processTask(
       storeRegistered: true,
     })
     : false;
+  // Forced runs still respect dedup: only post when the issues changed.
   const shouldComment = !input.dryRun && !repliedToHuman &&
-    (input.force || !await failureCommentAlreadySent(task.gid, verdict));
+    !await failureCommentAlreadySent(task.gid, verdict);
+  let commented = false;
   if (shouldComment) {
     await recordRun({
       context,
@@ -409,22 +433,22 @@ async function processTask(
       verdict: { spec, verdict, publishedThemeId, commentPending: true },
       confidence: Math.min(spec.confidence, verdict.confidence),
     });
-    await asana.addQaComment(
+    commented = await asana.addQaComment(
       task.gid,
       context.creator,
       formatFailureComment(verdict),
-      FAILURE_COMMENT_FINGERPRINT,
+      () => failureCommentOnAsana(task.gid, verdict),
     );
   }
 
-  const refreshedTask = shouldComment || repliedToHuman
+  const refreshedTask = commented || repliedToHuman
     ? await asana.getTask(task.gid)
     : context.task;
   await recordRun({
     context,
     task: refreshedTask,
     status: "failed",
-    action: (shouldComment || repliedToHuman) ? "commented" : "none",
+    action: (commented || repliedToHuman) ? "commented" : "none",
     verdict: { spec, verdict, publishedThemeId },
     confidence: Math.min(spec.confidence, verdict.confidence),
   });
@@ -432,7 +456,7 @@ async function processTask(
     ...resultMeta,
     publishedThemeId,
     status: "failed",
-    action: (shouldComment || repliedToHuman) ? "commented" : "none",
+    action: (commented || repliedToHuman) ? "commented" : "none",
     confidence: Math.min(spec.confidence, verdict.confidence),
     details: verdict,
   };
@@ -498,7 +522,11 @@ async function handleUnregisteredStore(
   }
 
   const designContext = await asana.getPromoDesignContext(context.parent);
-  const recipient = getMissingLinkRecipient(designContext, context.creator);
+  const recipient = getMissingLinkRecipient(
+    designContext,
+    context.creator,
+    EMIL_ASANA_GID,
+  );
   const shouldComment = !input.dryRun &&
     !await asana.hasCommentContaining(
       context.task.gid,
@@ -749,8 +777,12 @@ async function handleMissingEditorUrl(
   }
 
   const reminder = await resolveMissingLinkReminder(context.task.gid, designContext);
-  const recipient = getMissingLinkRecipient(designContext, context.creator);
-  const shouldComment = !input.dryRun && (input.force || reminder.shouldSend);
+  const recipient = getMissingLinkRecipient(
+    designContext,
+    context.creator,
+    EMIL_ASANA_GID,
+  );
+  const shouldComment = !input.dryRun && reminder.shouldSend;
 
   if (shouldComment) {
     await recordRun({
@@ -880,9 +912,30 @@ async function failureCommentAlreadySent(
   taskGid: string,
   verdict: Awaited<ReturnType<typeof applyDeterministicGuards>>,
 ): Promise<boolean> {
-  if (await asana.hasCommentContaining(taskGid, FAILURE_COMMENT_FINGERPRINT)) {
-    return true;
-  }
+  const latest = await asana.getLatestCommentContaining(
+    taskGid,
+    FAILURE_COMMENT_FINGERPRINT,
+  );
+  if (latest) return failureIssuesCoveredBy(verdict, latest.text);
+  return await failureRecordedWithoutComment(taskGid, verdict);
+}
+
+async function failureCommentOnAsana(
+  taskGid: string,
+  verdict: Awaited<ReturnType<typeof applyDeterministicGuards>>,
+): Promise<boolean> {
+  const latest = await asana.getLatestCommentContaining(
+    taskGid,
+    FAILURE_COMMENT_FINGERPRINT,
+  );
+  return latest ? failureIssuesCoveredBy(verdict, latest.text) : false;
+}
+
+// Covers a failure comment that was posted and later deleted from Asana.
+async function failureRecordedWithoutComment(
+  taskGid: string,
+  verdict: Awaited<ReturnType<typeof applyDeterministicGuards>>,
+): Promise<boolean> {
 
   const signature = failureSignature(verdict);
   const { data, error } = await supabase
@@ -1077,6 +1130,112 @@ async function notify(
       `Email not sent (${subject}): ${errorMessage(error)}`,
     );
   }
+}
+
+const TASK_WEBHOOKS_KEY = "asana_task_webhooks";
+
+async function ensureQaTaskWebhooks(
+  tasks: AsanaTask[],
+  options: { fullSweep: boolean },
+): Promise<void> {
+  const targetUrl =
+    `${requiredEnv("SUPABASE_URL").replace(/\/$/, "")}/functions/v1/asana-webhook`;
+  const resourceGids = new Set<string>();
+  for (const task of tasks) {
+    if (task.completed || !isPromoQaTask(task)) continue;
+    resourceGids.add(task.gid);
+    if (task.parent?.gid) resourceGids.add(task.parent.gid);
+  }
+  if (!resourceGids.size && !options.fullSweep) return;
+
+  const { data, error } = await supabase
+    .from("promo_qa_settings")
+    .select("value")
+    .eq("key", TASK_WEBHOOKS_KEY)
+    .maybeSingle();
+  if (error) throw error;
+
+  const stored = (data?.value ?? {}) as {
+    webhooks?: Array<{ gid: string; task_gid: string; active?: boolean }>;
+  };
+  let webhooks = [...(stored.webhooks ?? [])];
+  const known = new Set(webhooks.map((webhook) => webhook.task_gid));
+  let changed = false;
+
+  for (const resourceGid of resourceGids) {
+    if (known.has(resourceGid)) continue;
+    try {
+      const created = await asana.createResourceWebhook(resourceGid, targetUrl);
+      webhooks.push({
+        gid: created.gid,
+        task_gid: resourceGid,
+        active: created.active,
+      });
+      known.add(resourceGid);
+      changed = true;
+    } catch (webhookError) {
+      const message = errorMessage(webhookError);
+      if (message.includes("Duplicated webhook")) {
+        const existing = await asana.findResourceWebhook(
+          ASANA_WORKSPACE_GID,
+          resourceGid,
+          targetUrl,
+        ).catch(() => null);
+        webhooks.push({
+          gid: existing?.gid ?? "existing",
+          task_gid: resourceGid,
+          active: existing?.active ?? true,
+        });
+        known.add(resourceGid);
+        changed = true;
+        continue;
+      }
+      console.error(`Task webhook failed for ${resourceGid}:`, webhookError);
+    }
+  }
+
+  // A full sweep sees every open banner QA task, so anything else is done.
+  if (options.fullSweep) {
+    const kept: typeof webhooks = [];
+    for (const webhook of webhooks) {
+      if (resourceGids.has(webhook.task_gid)) {
+        kept.push(webhook);
+        continue;
+      }
+      try {
+        const webhookGid = webhook.gid !== "existing"
+          ? webhook.gid
+          : (await asana.findResourceWebhook(
+            ASANA_WORKSPACE_GID,
+            webhook.task_gid,
+            targetUrl,
+          ))?.gid;
+        if (webhookGid) await asana.deleteWebhook(webhookGid);
+        changed = true;
+      } catch (deleteError) {
+        if (deleteError instanceof AsanaApiError && deleteError.status === 404) {
+          changed = true;
+          continue;
+        }
+        console.error(`Task webhook cleanup failed for ${webhook.task_gid}:`, deleteError);
+        kept.push(webhook);
+      }
+    }
+    webhooks = kept;
+  }
+
+  if (!changed) return;
+
+  const { error: upsertError } = await supabase.from("promo_qa_settings").upsert({
+    key: TASK_WEBHOOKS_KEY,
+    value: {
+      target: targetUrl,
+      webhooks,
+      updated_at: new Date().toISOString(),
+    },
+    updated_at: new Date().toISOString(),
+  }, { onConflict: "key" });
+  if (upsertError) throw upsertError;
 }
 
 function errorMessage(error: unknown): string {

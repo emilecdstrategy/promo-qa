@@ -67,7 +67,7 @@ supabase secrets set `
 ## 4. Deploy functions
 
 ```powershell
-supabase functions deploy asana-webhook qa-runner admin-api --project-ref bcmwdpvsmxuzsqrcooos
+npx supabase functions deploy asana-webhook qa-runner admin-api --project-ref bcmwdpvsmxuzsqrcooos
 ```
 
 ## 5. Register the Asana webhook
@@ -100,9 +100,18 @@ select vault.create_secret(
 );
 
 select vault.create_secret(
-  'YOUR_SUPABASE_ANON_KEY',
-  'promo_qa_anon_key'
+  'SAME_VALUE_AS_QA_RUNNER_SECRET',
+  'promo_qa_runner_secret'
 );
+```
+
+The `promo-qa-safety-net` cron job then runs a full sweep every 4 hours.
+
+Banner Upload QA cards are usually subtasks outside any project, so also
+register task-level webhooks (qa-runner keeps these up to date afterwards):
+
+```powershell
+npm run webhook:sync-tasks
 ```
 
 ## 8. Dry-run before live writes

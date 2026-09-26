@@ -1,12 +1,17 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  buildAsanaCommentHtml,
+  getMissingLinkRecipient,
   isPromoQaTask,
   parseShopifyEditorUrl,
+  promoteSecret,
 } from "../supabase/functions/_shared/asana.ts";
 import {
   applyDeterministicGuards,
   collectBannerBlocks,
+  failureIssuesCoveredBy,
+  formatFailureComment,
   matchExpectedBanners,
   urlsEquivalent,
 } from "../supabase/functions/_shared/verify.ts";
@@ -15,7 +20,72 @@ test("recognizes intended QA task names", () => {
   assert.equal(isPromoQaTask({ name: "Banner Upload QA" }), true);
   assert.equal(isPromoQaTask({ name: "Promo Banner QA" }), true);
   assert.equal(isPromoQaTask({ name: "QA - homepage banner" }), true);
+  assert.equal(isPromoQaTask({ name: "Homepage Banners QA" }), true);
   assert.equal(isPromoQaTask({ name: "Product copy QA" }), false);
+  assert.equal(isPromoQaTask({ name: "Promo QA" }), false);
+  assert.equal(isPromoQaTask({ name: "LABOR15 QA" }), false);
+});
+
+const EMIL = "1206406200377321";
+const creator = { gid: "c1", name: "Creator" };
+
+test("missing-link recipient is the Banner Upload parent's assignee", () => {
+  const recipient = getMissingLinkRecipient({
+    parentTask: { gid: "p", name: "Banner Upload", assignee: { gid: "h1", name: "Hugo" } },
+    subtasks: [{ name: "Banner Upload QA", completed: false, assignee_gid: EMIL, assignee_name: "Emil" }],
+    comments: [],
+  }, creator, EMIL);
+  assert.deepEqual(recipient, { gid: "h1", name: "Hugo" });
+});
+
+test("missing-link recipient is a Banner Upload sibling's assignee", () => {
+  const recipient = getMissingLinkRecipient({
+    parentTask: { gid: "p", name: "Labor Day Promo", assignee: { gid: "x", name: "PM" } },
+    subtasks: [
+      { name: "Banner Upload QA", completed: false, assignee_gid: EMIL, assignee_name: "Emil" },
+      { name: "Banner Upload - Desktop + Mobile", completed: false, assignee_gid: "d1", assignee_name: "Diana" },
+    ],
+    comments: [],
+  }, creator, EMIL);
+  assert.deepEqual(recipient, { gid: "d1", name: "Diana" });
+});
+
+test("missing-link recipient falls back to creator, never Emil", () => {
+  const recipient = getMissingLinkRecipient({
+    parentTask: { gid: "p", name: "Banner Upload", assignee: { gid: EMIL, name: "Emil" } },
+    subtasks: [],
+    comments: [],
+  }, creator, EMIL);
+  assert.deepEqual(recipient, creator);
+});
+
+test("failure dedup only suppresses when every issue was already posted", () => {
+  const verdict = (issues) => ({
+    banners: [{ label: "Hero", ok: false, issues }],
+    warnings: [],
+  });
+  const posted = formatFailureComment(verdict(["Start date is 2026-09-01, expected 2026-09-02."]));
+  // Asana returns the stripped HTML with list items run together.
+  const stripped = posted.replace(/\n\s*/g, "");
+  assert.equal(failureIssuesCoveredBy(verdict(["Start date is 2026-09-01, expected 2026-09-02."]), stripped), true);
+  assert.equal(failureIssuesCoveredBy(verdict(["The matched banner block or section is disabled."]), stripped), false);
+});
+
+test("comment html keeps every plain line of a casual reply", () => {
+  const html = buildAsanaCommentHtml(
+    { gid: "h1", name: "Hugo" },
+    "Looks good now.\nMarked it complete.",
+  );
+  assert.equal(
+    html,
+    '<body><a data-asana-gid="h1" data-asana-type="user"></a>Looks good now. Marked it complete.</body>',
+  );
+  assert.ok(!html.includes("<br"));
+});
+
+test("promoteSecret moves the match to the front without dropping any", () => {
+  assert.deepEqual(promoteSecret(["a", "b", "c"], 2), ["c", "a", "b"]);
+  assert.deepEqual(promoteSecret(["a", "b"], 0), ["a", "b"]);
 });
 
 test("parses Shopify editor target and HTML escaped query", () => {

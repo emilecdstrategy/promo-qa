@@ -157,11 +157,16 @@ export class AsanaClient {
     taskGid: string,
     creator: { gid: string; name: string } | null,
     message: string,
-    dedupNeedle?: string,
+    dedup?: string | (() => Promise<boolean>),
   ): Promise<boolean> {
-    if (dedupNeedle && await this.hasCommentContaining(taskGid, dedupNeedle)) {
-      return false;
-    }
+    const alreadyPosted = async () =>
+      typeof dedup === "function"
+        ? await dedup()
+        : dedup
+        ? await this.hasCommentContaining(taskGid, dedup)
+        : false;
+
+    if (await alreadyPosted()) return false;
 
     if (creator) {
       await this.request(`/tasks/${taskGid}/addFollowers`, {
@@ -172,9 +177,7 @@ export class AsanaClient {
       await new Promise((resolve) => setTimeout(resolve, 2000));
     }
 
-    if (dedupNeedle && await this.hasCommentContaining(taskGid, dedupNeedle)) {
-      return false;
-    }
+    if (await alreadyPosted()) return false;
 
     const htmlText = buildAsanaCommentHtml(creator, message);
 
@@ -364,6 +367,13 @@ export class AsanaClient {
     projectGid: string,
     targetUrl: string,
   ): Promise<{ gid: string; secret: string | null; active: boolean }> {
+    return this.createResourceWebhook(projectGid, targetUrl);
+  }
+
+  async createResourceWebhook(
+    resourceGid: string,
+    targetUrl: string,
+  ): Promise<{ gid: string; secret: string | null; active: boolean }> {
     const response = await fetch(`${ASANA_API}/webhooks`, {
       method: "POST",
       headers: {
@@ -372,7 +382,7 @@ export class AsanaClient {
       },
       body: JSON.stringify({
         data: {
-          resource: projectGid,
+          resource: resourceGid,
           target: targetUrl,
           filters: [
             { resource_type: "task", action: "changed" },
@@ -405,6 +415,26 @@ export class AsanaClient {
       secret,
       active: payload.data.active,
     };
+  }
+
+  async findResourceWebhook(
+    workspaceGid: string,
+    resourceGid: string,
+    targetUrl: string,
+  ): Promise<{ gid: string; active: boolean } | null> {
+    const query = new URLSearchParams({
+      workspace: workspaceGid,
+      resource: resourceGid,
+      opt_fields: "gid,active,target",
+    });
+    const webhooks = (await this.request<
+      Array<{ gid: string; active: boolean; target?: string }>
+    >(`/webhooks?${query}`)).data;
+    return webhooks.find((webhook) => webhook.target === targetUrl) ?? null;
+  }
+
+  async deleteWebhook(webhookGid: string): Promise<void> {
+    await this.request(`/webhooks/${webhookGid}`, { method: "DELETE" });
   }
 
   async getTaskContext(taskGid: string): Promise<TaskContext> {
@@ -453,21 +483,31 @@ export function isDueWithinDays(
 export function getMissingLinkRecipient(
   designContext: PromoDesignContext,
   fallback: { gid: string; name: string } | null,
+  excludeGid?: string,
 ): { gid: string; name: string } | null {
-  const upload = designContext.subtasks.find((subtask) =>
-    /^banner upload$/i.test(subtask.name.trim())
-  );
-  if (upload?.assignee_gid && upload.assignee_name) {
-    return { gid: upload.assignee_gid, name: upload.assignee_name };
+  const isUploadTask = (name: string) =>
+    /\bbanner uploads?\b/i.test(name) && !/\bqa\b/i.test(name);
+  const usable = (gid?: string, name?: string) =>
+    gid && name && gid !== excludeGid ? { gid, name } : null;
+
+  // QA card nested directly under the Banner Upload task.
+  const parent = designContext.parentTask;
+  if (parent && isUploadTask(parent.name)) {
+    const recipient = usable(parent.assignee?.gid, parent.assignee?.name);
+    if (recipient) return recipient;
+  }
+
+  // QA card sitting next to a Banner Upload sibling.
+  for (const subtask of designContext.subtasks) {
+    if (!isUploadTask(subtask.name)) continue;
+    const recipient = usable(subtask.assignee_gid, subtask.assignee_name);
+    if (recipient) return recipient;
   }
   return fallback;
 }
 
 export function isPromoQaTask(task: Pick<AsanaTask, "name">): boolean {
-  return (
-    /\b(?:banner|promo).{0,40}\bqa\b/i.test(task.name) ||
-    /\bqa\b.{0,40}\b(?:banner|promo)\b/i.test(task.name)
-  );
+  return /\bbanners?\b/i.test(task.name) && /\bqa\b/i.test(task.name);
 }
 
 export function parseShopifyEditorUrl(
@@ -502,7 +542,7 @@ export function extractStoreSlugFromText(text: string): string | null {
   return match ? match[1].toLowerCase() : null;
 }
 
-function buildAsanaCommentHtml(
+export function buildAsanaCommentHtml(
   creator: { gid: string; name: string } | null,
   message: string,
 ): string {
@@ -555,7 +595,14 @@ function buildAsanaCommentHtml(
       continue;
     }
 
-    if (!intro) intro = escapeAsanaCommentText(trimmed);
+    if (currentBanner || listItems.length) {
+      flushBanner();
+      listItems.push(`<li>${escapeAsanaCommentText(trimmed)}</li>`);
+      continue;
+    }
+    intro = intro
+      ? `${intro} ${escapeAsanaCommentText(trimmed)}`
+      : escapeAsanaCommentText(trimmed);
   }
 
   flushBanner();
@@ -627,12 +674,27 @@ export async function verifyAsanaWebhookSignatureAgainstSecrets(
   body: string,
   signature: string | null,
 ): Promise<boolean> {
-  for (const secret of secrets) {
-    if (await verifyAsanaWebhookSignature(secret, body, signature)) {
-      return true;
+  return await findMatchingWebhookSecret(secrets, body, signature) >= 0;
+}
+
+/** Index of the secret that signed the body, or -1. */
+export async function findMatchingWebhookSecret(
+  secrets: string[],
+  body: string,
+  signature: string | null,
+): Promise<number> {
+  for (let index = 0; index < secrets.length; index++) {
+    if (await verifyAsanaWebhookSignature(secrets[index], body, signature)) {
+      return index;
     }
   }
-  return false;
+  return -1;
+}
+
+/** Moves a matched secret to the front so busy webhooks verify on the first try. */
+export function promoteSecret(secrets: string[], index: number): string[] {
+  if (index <= 0 || index >= secrets.length) return secrets;
+  return [secrets[index], ...secrets.slice(0, index), ...secrets.slice(index + 1)];
 }
 
 function timingSafeEqualHex(left: string, right: string): boolean {
