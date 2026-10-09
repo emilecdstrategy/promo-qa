@@ -1,5 +1,5 @@
 import { createClient } from "npm:@supabase/supabase-js@2";
-import { AnthropicClient } from "../_shared/ai.ts";
+import { AnthropicClient, DEFAULT_ANTHROPIC_MODEL } from "../_shared/ai.ts";
 import {
   AsanaApiError,
   AsanaClient,
@@ -61,7 +61,7 @@ const supabase = createClient(
 const asana = new AsanaClient(requiredEnv("ASANA_ACCESS_TOKEN"));
 const anthropic = new AnthropicClient(
   requiredEnv("ANTHROPIC_API_KEY"),
-  Deno.env.get("ANTHROPIC_MODEL") ?? "claude-sonnet-4-5",
+  Deno.env.get("ANTHROPIC_MODEL") || DEFAULT_ANTHROPIC_MODEL,
 );
 const encryptionKey = requiredEnv("STORE_TOKEN_ENCRYPTION_KEY");
 const runnerSecret = requiredEnv("QA_RUNNER_SECRET");

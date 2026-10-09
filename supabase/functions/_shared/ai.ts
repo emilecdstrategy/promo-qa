@@ -8,6 +8,48 @@ import type {
 } from "./types.ts";
 
 const ANTHROPIC_API = "https://api.anthropic.com/v1/messages";
+export const DEFAULT_ANTHROPIC_MODEL = "claude-sonnet-5-5";
+
+// Thinking counts toward max_tokens on current models, so leave headroom
+// beyond the short JSON answers.
+const MAX_TOKENS = 16000;
+
+// Older models reject output_config.effort; ANTHROPIC_MODEL may point back at
+// one to roll back without a redeploy.
+const PRE_EFFORT_MODEL = /^claude-(?:3|sonnet-4-[05]|opus-4-[01]|haiku-4-5)/;
+// Models that accept server-side refusal fallback (`fallbacks: "default"`).
+const DEFAULT_FALLBACK_MODELS = new Set([
+  "claude-sonnet-5-5",
+  "claude-opus-5-5",
+  "claude-opus-5",
+  "claude-fable-5-1",
+]);
+
+export function buildMessageRequest(
+  model: string,
+  system: string,
+  input: unknown,
+): { headers: Record<string, string>; body: Record<string, unknown> } {
+  const headers: Record<string, string> = {};
+  const body: Record<string, unknown> = {
+    model,
+    max_tokens: MAX_TOKENS,
+    system,
+    messages: [{
+      role: "user",
+      content: JSON.stringify(input),
+    }],
+  };
+  if (!PRE_EFFORT_MODEL.test(model)) {
+    // Extraction and classification: low effort keeps thinking short.
+    body.output_config = { effort: "low" };
+  }
+  if (DEFAULT_FALLBACK_MODELS.has(model)) {
+    headers["anthropic-beta"] = "server-side-fallback-2026-07-01";
+    body.fallbacks = "default";
+  }
+  return { headers, body };
+}
 
 export class AnthropicClient {
   private readonly apiKey: string;
@@ -15,7 +57,7 @@ export class AnthropicClient {
 
   constructor(
     apiKey: string,
-    model = "claude-sonnet-4-5",
+    model = DEFAULT_ANTHROPIC_MODEL,
   ) {
     this.apiKey = apiKey;
     this.model = model;
@@ -24,29 +66,23 @@ export class AnthropicClient {
   private async jsonMessage<T>(
     system: string,
     input: unknown,
-    maxTokens = 3000,
   ): Promise<T> {
+    const request = buildMessageRequest(this.model, system, input);
     const response = await fetch(ANTHROPIC_API, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
         "x-api-key": this.apiKey,
         "anthropic-version": "2023-06-01",
+        ...request.headers,
       },
-      body: JSON.stringify({
-        model: this.model,
-        max_tokens: maxTokens,
-        temperature: 0,
-        system,
-        messages: [{
-          role: "user",
-          content: JSON.stringify(input),
-        }],
-      }),
+      body: JSON.stringify(request.body),
     });
 
     const payload = await response.json().catch(() => null) as {
       content?: Array<{ type: string; text?: string }>;
+      stop_reason?: string;
+      stop_details?: { category?: string | null } | null;
       error?: { message?: string };
     } | null;
     if (!response.ok) {
@@ -54,6 +90,16 @@ export class AnthropicClient {
         payload?.error?.message ??
           `Anthropic request failed (${response.status})`,
       );
+    }
+    if (payload?.stop_reason === "refusal") {
+      throw new Error(
+        `Claude declined the request (${
+          payload.stop_details?.category ?? "no category"
+        })`,
+      );
+    }
+    if (payload?.stop_reason === "max_tokens") {
+      throw new Error("Claude response was cut off at max_tokens");
     }
 
     const text = payload?.content
@@ -131,7 +177,6 @@ Rules:
         configuredThemeId: input.configuredThemeId,
         publishedThemeId: input.publishedThemeId,
       },
-      4000,
     );
 
     validateQaVerdict(verdict);
@@ -163,7 +208,6 @@ Rules:
 - If evidence is weak or mixed, set designed=false and explain in summary/signals.
 - confidence is 0..1. Keep confidence below 0.7 when uncertain.`,
       input,
-      1200,
     );
 
     validateDesignReadiness(assessment);
@@ -197,7 +241,6 @@ Rules:
 - Return null with low confidence when the store is ambiguous or not in the list.
 - confidence is 0..1.`,
       input,
-      800,
     );
 
     if (typeof result.confidence !== "number") {
@@ -236,7 +279,6 @@ Rules:
 - Use lastQaStatus/lastQaSummary only as prior context, not as a new check.
 - reply can be null when replyNeeded is false.`,
       input,
-      1200,
     );
 
     if (
@@ -281,7 +323,6 @@ Rules:
 - If outcome is failed, name the issue in plain English.
 - If outcome is passed, say it looks good and you completed it.`,
       input,
-      700,
     );
     if (!result.reply?.trim()) {
       throw new Error("Claude reply omitted text");

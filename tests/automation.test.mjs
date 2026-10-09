@@ -26,6 +26,27 @@ test("recognizes intended QA task names", () => {
   assert.equal(isPromoQaTask({ name: "LABOR15 QA" }), false);
 });
 
+test("Claude requests use Sonnet 5.5 settings and stay valid on rollback", async () => {
+  const { buildMessageRequest, DEFAULT_ANTHROPIC_MODEL } = await import(
+    "../supabase/functions/_shared/ai.ts"
+  );
+  assert.equal(DEFAULT_ANTHROPIC_MODEL, "claude-sonnet-5-5");
+
+  const current = buildMessageRequest(DEFAULT_ANTHROPIC_MODEL, "sys", { a: 1 });
+  assert.equal(current.body.temperature, undefined);
+  assert.equal(current.body.thinking, undefined);
+  assert.deepEqual(current.body.output_config, { effort: "low" });
+  assert.equal(current.body.fallbacks, "default");
+  assert.equal(current.headers["anthropic-beta"], "server-side-fallback-2026-07-01");
+  assert.ok(current.body.max_tokens >= 16000);
+
+  // Rolling back via ANTHROPIC_MODEL must not send params Sonnet 4.5 rejects.
+  const rollback = buildMessageRequest("claude-sonnet-4-5", "sys", {});
+  assert.equal(rollback.body.output_config, undefined);
+  assert.equal(rollback.body.fallbacks, undefined);
+  assert.deepEqual(rollback.headers, {});
+});
+
 const EMIL = "1206406200377321";
 const creator = { gid: "c1", name: "Creator" };
 
