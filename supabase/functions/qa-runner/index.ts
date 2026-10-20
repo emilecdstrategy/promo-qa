@@ -24,6 +24,7 @@ import type {
 } from "../_shared/types.ts";
 import {
   alreadyRepliedToComment,
+  isAthenaUser,
   pickIncomingComment,
   shouldListenToComment,
 } from "../_shared/comment-agent.ts";
@@ -661,7 +662,8 @@ async function replyToIncoming(
   },
 ): Promise<boolean> {
   const recipient = conversation.incoming.authorGid &&
-      conversation.incoming.authorName
+      conversation.incoming.authorName &&
+      !isAthenaUser(conversation.incoming.authorGid)
     ? {
       gid: conversation.incoming.authorGid,
       name: conversation.incoming.authorName,
@@ -685,6 +687,17 @@ async function replyToIncoming(
     console.error("Failed to compose conversational QA reply:", error);
   }
   if (!message.trim()) return false;
+
+  // One reply per comment, even when the webhook and the cron reach it at the
+  // same moment: on 2026-10-17 both did, and every reply went up twice. The
+  // insert is the lock; whoever loses it stays quiet.
+  const { error: claimError } = await supabase
+    .from("qa_comment_replies")
+    .insert({ story_gid: conversation.incoming.gid, task_gid: conversation.incoming.taskGid });
+  if (claimError) {
+    if (claimError.code === "23505") return false;
+    console.error("Could not claim the comment before replying:", claimError.message);
+  }
 
   await asana.addQaComment(conversation.incoming.taskGid, recipient, message);
   return true;

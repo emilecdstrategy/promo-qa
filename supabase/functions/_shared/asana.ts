@@ -1,3 +1,4 @@
+import { isAthenaUser } from "./comment-agent.ts";
 import type {
   AsanaTask,
   IncomingComment,
@@ -120,15 +121,19 @@ export class AsanaClient {
     automationAssigneeGid?: string,
   ): Promise<{ gid: string; name: string } | null> {
     const automationGid = automationAssigneeGid ?? null;
+    // A person: not the account Promo QA runs as, and not the promo
+    // calendar's own account, which creates these tasks and reads nothing.
+    const isPerson = (u?: { gid: string; name?: string } | null): u is { gid: string; name: string } =>
+      !!u?.gid && u.gid !== automationGid && !isAthenaUser(u.gid);
 
-    if (task.created_by?.gid && task.created_by.gid !== automationGid) {
-      return task.created_by;
-    }
-    if (parent?.created_by?.gid && parent.created_by.gid !== automationGid) {
-      return parent.created_by;
-    }
-    if (task.created_by?.gid) return task.created_by;
-    return await this.getCreator(task);
+    // The web person first (Emil, 2026-10-20: "it should tag whoever is the
+    // web person"): the parent is the work being checked (the Promo Banner),
+    // and whoever has it is who adds the link and fixes what QA finds.
+    if (isPerson(parent?.assignee)) return { gid: parent!.assignee!.gid, name: parent!.assignee!.name ?? "" };
+    if (isPerson(task.created_by)) return task.created_by;
+    if (isPerson(parent?.created_by)) return parent!.created_by!;
+    const fallback = await this.getCreator(task);
+    return isPerson(fallback) ? fallback : null;
   }
 
   async getCreator(
